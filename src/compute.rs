@@ -37,7 +37,7 @@ impl Compute {
     }
 }
 
-pub trait ComputeProgram<Config> {
+pub trait ComputeProgram<Config, Params> {
     fn init(config: Config, compute: Arc<Compute>) -> Self;
-    fn run(&mut self, compute: Arc<Compute>);
+    fn run(&mut self, params: Params, compute: Arc<Compute>);
 }

@@ -13,7 +13,7 @@ impl StorageStagingBufferPair {
         let storage = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: size_bytes as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false
         });
 

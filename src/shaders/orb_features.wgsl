@@ -26,8 +26,25 @@ var<uniform> image_size: vec2u;
 @group(2) @binding(0)
 var<storage, read_write> v_descriptors: array<BriefDescriptor>;
 
-// @group(3) @binding(0)
-// var<storage, read> v_previous_descriptors: array<BriefDescriptor>;
+@group(3) @binding(0)
+var<storage, read_write> v_previous_descriptors: array<BriefDescriptor>;
+
+@group(3) @binding(1)
+var<storage, read_write> v_previous_index: u32;
+
+@group(3) @binding(2)
+var<storage, read_write> v_matches: array<u32>;
+
+@group(3) @binding(3)
+var<storage, read_write> v_match_index: atomic<u32>;
+
+@group(3) @binding(4)
+var<storage, read_write> v_previous_features: array<FeatureData>;
+/*
+HELPER FUNCTIONS
+
+read_image_intensity - technically there's one byte per pixel, which are packed into u32s
+*/
 
 fn read_image_intensity(x: i32, y: i32) -> u32 {
     if x < 0 || y < 0 || x >= i32(image_size.x) || y >= i32(image_size.y) {
@@ -43,6 +60,19 @@ fn read_image_intensity(x: i32, y: i32) -> u32 {
     return val;
 }
 
+/*
+ORB FEATURE CONSTANTS
+
+CORNERS_16 - the FAST corner offsets
+BRIEF_QUERIES - the non-rotated BRIEF query positions (x1, y1, x2, y2)
+
+*/
+var<private> CORNERS_4: array<vec2i, 4> = array(
+    vec2i(3, 0),
+    vec2i(-3, 0),
+    vec2i(0, 3),
+    vec2i(0, -3),
+);
 
 var<private> CORNERS_16: array<vec2i, 16> = array(
     vec2i(-3, 1),
@@ -325,6 +355,15 @@ var<private> BRIEF_QUERIES: array<vec4i, 256> = array(
 /*
 COMPUTE KERNEL 1: FEATURE EXTRACTION
 
+global_id.x is the x coordinate of the current pixel
+global_id.y is the y coordinate of the current pixel
+
+num_workgroups_x is the width of the image divided by the workgroup size
+num_workgroups_y is the height of the image divided by the workgroup size
+
+TODO: Properly implement BRIEF feature descriptors
+ 1. Add pass to compute integral image
+
 */
 @compute
 @workgroup_size(8, 8, 1)
@@ -334,11 +373,34 @@ fn compute_orb(
     
     if global_id.x < 3 || global_id.y < 3 || global_id.x > image_size.x - 4 || global_id.y > image_size.y - 4 {
         return;
-    }    
+    }
 
     let center_value = read_image_intensity(i32(global_id.x), i32(global_id.y));
 
-    var centroid = vec2f(0, 0);
+    // Shortcut to discard pixels before full FAST check
+    var num_over = 0u;
+    var num_under = 0u;
+    
+    for (var i = 0u; i < 4u; i ++) {
+        let corner_value = read_image_intensity(
+            i32(global_id.x) + CORNERS_4[i].x,
+            i32(global_id.y) + CORNERS_4[i].y
+        );
+
+        let diff = i32(corner_value) - i32(center_value);
+        
+        if diff > i32(v_threshold) {
+            num_over ++;
+        } else if diff < -i32(v_threshold) {
+            num_under ++;
+        }
+    }
+
+    if num_over < 3 && num_under < 3 {
+        return;
+    }
+
+    // Full FAST-16
     var is_over: u32 = 0u;
     var is_under: u32 = 0u;
 
@@ -393,6 +455,10 @@ fn compute_orb(
 /*
 COMPUTE KERNEL 2: BRIEF FEATURE DESCRIPTORS
 
+global_id.x is the index of the current FAST feature
+
+num_workgroups_x is the maximum number of features divided by the workgroup size
+
 */
 @compute
 @workgroup_size(64, 1, 1)
@@ -423,6 +489,10 @@ fn compute_brief(
         ct, -st,
         st, ct
     );
+    // let rotation_matrix = mat2x2f(
+    //     1.0, 0.0,
+    //     0.0, 1.0
+    // );
 
     // Now, rotate BRIEF descriptors by angle and run tests
     var descriptor: BriefDescriptor;
@@ -434,13 +504,21 @@ fn compute_brief(
         let pos_ai = vec2i(round(pos_a));
         let pos_bi = vec2i(round(pos_b));
 
-        let intensity_a = read_image_intensity(pos_ai.x, pos_ai.y);
-        let intensity_b = read_image_intensity(pos_bi.x, pos_bi.y);
+        let intensity_a = read_image_intensity(
+            i32(feature.x) + pos_ai.x, 
+            i32(feature.y) + pos_ai.y
+        );
+        let intensity_b = read_image_intensity(
+            i32(feature.x) + pos_bi.x, 
+            i32(feature.y) + pos_bi.y
+        );
 
         let j = i / 8;
         let k = i & 7;
 
-        data[j] |= select(0u, 1u, intensity_b > intensity_a) << k;
+        if intensity_b > intensity_a {
+            data[j] |= 1u << k;
+        }
     }    
     descriptor.data = data;
     v_descriptors[global_id.x] = descriptor;
@@ -449,19 +527,34 @@ fn compute_brief(
 /*
 COMPUTE KERNEL 3: FEATURE MATCHING
 
+global_id.x is the index of the feature in the current image
+global_ud.y is the index of the feature in the prior image
+
+num_workgroups_x is the maximum number of features divided by the workgroup size
+num_workgroups_y is the maximum number of features divided by the workgroup size
 */
 @compute
 @workgroup_size(8, 8, 1)
 fn compute_matches(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
-
     let id_a = global_id.x;
     let id_b = global_id.y;
-    
-    for (var i = 0u; i < 256u; i ++) {
 
+    if id_a >= v_index || id_b >= v_previous_index {
+        return;
+    }
+    
+    let feature_a = v_features[id_a];
+    let feature_b = v_previous_features[id_b];
+
+    var bad_bits = 0u;
+    for (var i = 0u; i < 8u; i ++) {
+        bad_bits += countOneBits(v_descriptors[id_a].data[i] ^ v_previous_descriptors[id_b].data[i]);
     }
 
-
+    if bad_bits < 6u {
+        let index = atomicAdd(&v_match_index, 1u);
+        v_matches[index] = (global_id.x << 16) | global_id.y;
+    }
 }
