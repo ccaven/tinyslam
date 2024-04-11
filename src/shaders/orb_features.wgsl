@@ -40,6 +40,25 @@ fn read_image_intensity(x: i32, y: i32) -> u32 {
     return val;
 }
 
+var<private> CORNERS_16: array<vec2i, 16> = array(
+    vec2i(-3, 1),
+    vec2i(-3, 0),
+    vec2i(-3, -1),
+    vec2i(-2, -2),
+    vec2i(-1, -3),
+    vec2i(0, -3),
+    vec2i(1, -3),
+    vec2i(2, -2),
+    vec2i(3, -1),
+    vec2i(3, 0),
+    vec2i(3, 1),
+    vec2i(2, 2),
+    vec2i(1, 3),
+    vec2i(0, 3),
+    vec2i(-1, 3),
+    vec2i(-2, 2)
+);
+
 @compute
 @workgroup_size(16, 16, 1)
 fn compute_orb(
@@ -48,26 +67,7 @@ fn compute_orb(
     
     if global_id.x < 3 || global_id.y < 3 || global_id.x > image_size.x - 4 || global_id.y > image_size.y - 4 {
         return;
-    }
-
-    var CORNERS_16: array<vec2i, 16> = array(
-        vec2i(-3, 1),
-        vec2i(-3, 0),
-        vec2i(-3, -1),
-        vec2i(-2, -2),
-        vec2i(-1, -3),
-        vec2i(0, -3),
-        vec2i(1, -3),
-        vec2i(2, -2),
-        vec2i(3, -1),
-        vec2i(3, 0),
-        vec2i(3, 1),
-        vec2i(2, 2),
-        vec2i(1, 3),
-        vec2i(0, 3),
-        vec2i(-1, 3),
-        vec2i(-2, 2)
-    );
+    }    
 
     let center_value = read_image_intensity(i32(global_id.x), i32(global_id.y));
 
@@ -140,6 +140,20 @@ fn compute_brief(
 
     let center_value = read_image_intensity(i32(feature.x), i32(feature.y));
 
+    var centroid = vec2f(0, 0);
+
+    for (var i = 0u; i < 16u; i ++) {
+        centroid += vec2f(CORNERS_16[i]) * f32(read_image_intensity(
+            i32(feature.x) + CORNERS_16[i].x,
+            i32(feature.y) + CORNERS_16[i].y
+        ));
+    }
+
+    var angle = atan2(centroid.y, centroid.x);
+
+    // Now, rotate BRIEF descriptors by angle and run tests
+    _ = angle;
+    
     var descriptor: BriefDescriptor;
 
     descriptor.data = array(center_value, v_threshold, 0, 0, 0, 0, 0, 0);

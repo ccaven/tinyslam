@@ -210,7 +210,7 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
             layout: Some(&orb_pipeline_layout),
             module: &module,
             entry_point: "compute_orb"
-        }); 
+        });
 
         let brief_pipeline = compute.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Brief Pipeline"),
@@ -239,7 +239,7 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
         });
 
         let bind_group_1 = compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bind Group 0 b"),
+            label: None,
             layout: &bind_group_1_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -295,50 +295,30 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
             cpass.set_bind_group(0, &self.bind_groups[0], &[]);
             cpass.set_bind_group(1, &self.bind_groups[1], &[]);
             
-            let num_workgroups_x = (self.config.image_width + 15) / 16;
-            let num_workgroups_y = (self.config.image_height + 15) / 16;
-            let num_workgroups_z = 1;
+            cpass.dispatch_workgroups(
+                ((self.config.image_width + 15)/ 16) as u32,
+                ((self.config.image_height + 15) / 16) as u32,
+                1 as u32
+            );
+
+            cpass.set_pipeline(&self.brief_pipeline);
+            cpass.set_bind_group(0, &self.bind_groups[0], &[]);
+            cpass.set_bind_group(1, &self.bind_groups[1], &[]);
+            cpass.set_bind_group(2, &self.bind_groups[2], &[]);
 
             cpass.dispatch_workgroups(
-                num_workgroups_x as u32,
-                num_workgroups_y as u32,
-                num_workgroups_z as u32
+                ((self.config.max_features + 63) / 64) as u32,
+                1 as u32,
+                1 as u32
             );
         }
         
         self.features.copy(&mut encoder);
         self.counter.copy(&mut encoder);
         
+        self.feature_descriptors.copy(&mut encoder);
+
         compute.queue.submit([encoder.finish()]);
-
-        let mut encoder_2 = compute.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: None
-        });
-        {
-            let mut cpass_2 = encoder_2.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None
-            });
-
-            cpass_2.set_pipeline(&self.brief_pipeline);
-            cpass_2.set_bind_group(0, &self.bind_groups[0], &[]);
-            cpass_2.set_bind_group(1, &self.bind_groups[1], &[]);
-            cpass_2.set_bind_group(2, &self.bind_groups[2], &[]);
-
-            let num_workgroups_x = (self.config.max_features + 63) / 64;
-            let num_workgroups_y = 1;
-            let num_workgroups_z = 1;
-
-            cpass_2.dispatch_workgroups(
-                num_workgroups_x as u32,
-                num_workgroups_y as u32,
-                num_workgroups_z as u32
-            );
-        }
-
-        self.feature_descriptors.copy(&mut encoder_2);
-
-        compute.queue.submit([encoder_2.finish()]);
     }
 }
 
