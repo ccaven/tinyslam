@@ -4,6 +4,10 @@ struct FeatureData {
     y: u32
 }
 
+struct BriefDescriptor {
+    data: array<u32, 8>
+}
+
 @group(0) @binding(0)
 var<storage, read_write> v_index: atomic<u32>;
 
@@ -18,6 +22,9 @@ var<storage, read> v_image: array<u32>;
 
 @group(1) @binding(1)
 var<uniform> image_size: vec2u;
+
+@group(2) @binding(0)
+var<storage, read_write> v_descriptors: array<BriefDescriptor>;
 
 fn read_image_intensity(x: i32, y: i32) -> u32 {
     if x < 0 || y < 0 || x >= i32(image_size.x) || y >= i32(image_size.y) {
@@ -35,26 +42,9 @@ fn read_image_intensity(x: i32, y: i32) -> u32 {
 
 @compute
 @workgroup_size(16, 16, 1)
-fn main(
+fn compute_orb(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
-
-    // if global_id.x < 4 {
-    //     return;
-    // }
-
-    // if global_id.y < 4 {
-    //     return;
-    // }
-
-    // if global_id.x >= image_size.x - 4 {
-    //     return;
-    // }
-    // if global_id.y >= image_size.y - 4 {
-    //     return;
-    // }
-
-    // TODO: Properly discard excess threads
     
     if global_id.x < 3 || global_id.y < 3 || global_id.x > image_size.x - 4 || global_id.y > image_size.y - 4 {
         return;
@@ -135,4 +125,24 @@ fn main(
         v_features[index] = data;
     }
     
+}
+
+@compute
+@workgroup_size(64, 1, 1)
+fn compute_brief(
+    @builtin(global_invocation_id) global_id: vec3<u32>
+) {
+    if global_id.x > atomicLoad(&v_index) {
+        return;
+    }
+
+    let feature = v_features[global_id.x];
+
+    let center_value = read_image_intensity(i32(feature.x), i32(feature.y));
+
+    var descriptor: BriefDescriptor;
+
+    descriptor.data = array(center_value, v_threshold, 0, 0, 0, 0, 0, 0);
+
+    v_descriptors[global_id.x] = descriptor;
 }

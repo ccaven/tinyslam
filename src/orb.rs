@@ -6,6 +6,7 @@ TODO:
 
 */
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use crate::compute::{Compute, ComputeProgram};
@@ -24,7 +25,9 @@ pub struct OrbFeatureExtractor {
     image_buffer: wgpu::Buffer,
     features: StorageStagingBufferPair,
     counter: StorageStagingBufferPair,
-    pipeline: wgpu::ComputePipeline,
+    feature_descriptors: StorageStagingBufferPair,
+    orb_pipeline: wgpu::ComputePipeline,
+    brief_pipeline: wgpu::ComputePipeline,
     bind_groups: Vec<wgpu::BindGroup>
 }
 
@@ -59,6 +62,7 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
     fn init(config: OrbFeatureExtractorConfig, compute: Arc<Compute>) -> OrbFeatureExtractor {
         let image_buffer_size = config.image_width * config.image_height;
         let feature_buffer_size = config.max_features * 4 * 2;
+        let descriptor_buffer_size = config.max_features * 4 * 8;
 
         let module = compute.device.create_shader_module(wgpu::include_wgsl!("shaders/orb_features.wgsl"));
 
@@ -84,7 +88,6 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
         });
 
         {
-
             compute.queue.write_buffer(
                 &threshold_buffer, 
                 0, 
@@ -96,37 +99,129 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
                 bytemuck::cast_slice(&[config.image_width as u32, config.image_height as u32])
             );
             compute.queue.submit([]);
-
-            // let (s, r) = flume::bounded(1);
-
-            // image_size_buffer.slice(..).map_async(wgpu::MapMode::Read, move |x| s.send(x).unwrap() );
-
-            // compute.device.poll(wgpu::Maintain::Wait);
-
-            // pollster::block_on(r.recv_async()).unwrap().unwrap();
-
-            // let slice = image_size_buffer.slice(..).get_mapped_range();
-            // println!("{:?}", slice.get(0..2));
-
-            // image_size_buffer.unmap();
         }
 
-        
 
         let image = StagingStorageBufferPair::new(&compute.device, image_buffer_size);
         let counter = StorageStagingBufferPair::new(&compute.device, 4);
         let features = StorageStagingBufferPair::new(&compute.device, feature_buffer_size);
+        let feature_descriptors = StorageStagingBufferPair::new(&compute.device, descriptor_buffer_size);
 
-        let pipeline = compute.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let bind_group_0_layout = compute.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            layout: None,
-            module: &module,
-            entry_point: "main"
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    binding: 0,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },  
+                        has_dynamic_offset: false, 
+                        min_binding_size: Some(NonZeroU64::new(4).unwrap()) 
+                    },
+                    count: None
+                },
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    binding: 1,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },  
+                        has_dynamic_offset: false, 
+                        min_binding_size: Some(NonZeroU64::new(8).unwrap()) 
+                    },
+                    count: None
+                },
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    binding: 2,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Uniform,  
+                        has_dynamic_offset: false, 
+                        min_binding_size:Some(NonZeroU64::new(4).unwrap()) 
+                    },
+                    count: None
+                }
+            ]
         });
 
-        let bind_group = compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bind Group 1"),
-            layout: &pipeline.get_bind_group_layout(0),
+        let bind_group_1_layout = compute.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    binding: 0,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },  
+                        has_dynamic_offset: false, 
+                        min_binding_size: Some(NonZeroU64::new(4).unwrap()) 
+                    },
+                    count: None
+                },
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    binding: 1,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Uniform,  
+                        has_dynamic_offset: false, 
+                        min_binding_size:Some(NonZeroU64::new(8).unwrap()) 
+                    },
+                    count: None
+                }
+            ]
+        });
+
+        let bind_group_2_layout = compute.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    binding: 0,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },  
+                        has_dynamic_offset: false, 
+                        min_binding_size: Some(NonZeroU64::new(4 * 8).unwrap()) 
+                    },
+                    count: None
+                }
+            ]
+        });
+
+        let orb_pipeline_layout = compute.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[
+                &bind_group_0_layout,
+                &bind_group_1_layout,
+                //&bind_group_2_layout
+            ],
+            push_constant_ranges: &[]
+        });
+
+        let brief_pipeline_layout = compute.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[
+                &bind_group_0_layout,
+                &bind_group_1_layout,
+                &bind_group_2_layout
+            ],
+            push_constant_ranges: &[]
+        });
+
+        let orb_pipeline = compute.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Orb Pipeline"),
+            layout: Some(&orb_pipeline_layout),
+            module: &module,
+            entry_point: "compute_orb"
+        }); 
+
+        let brief_pipeline = compute.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Brief Pipeline"),
+            layout: Some(&brief_pipeline_layout),
+            module: &module,
+            entry_point: "compute_brief"
+        });
+
+        let bind_group_0 = compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bind Group 0 a"),
+            layout: &bind_group_0_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -143,9 +238,9 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
             ]
         });
 
-        let bind_group_2 = compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bind Group 2"),
-            layout: &pipeline.get_bind_group_layout(1),
+        let bind_group_1 = compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bind Group 0 b"),
+            layout: &bind_group_1_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -158,15 +253,28 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
             ]
         });
 
+        let bind_group_2 = compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bind Group 2 b"),
+            layout: &bind_group_2_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: feature_descriptors.storage.as_entire_binding()
+                }
+            ]
+        });
+
         Self {
             config,
             module,
             image,
             image_buffer,
             features,
+            feature_descriptors,
             counter,
-            pipeline,
-            bind_groups: vec![bind_group, bind_group_2]
+            orb_pipeline,
+            brief_pipeline,
+            bind_groups: vec![bind_group_0, bind_group_1, bind_group_2],
         }
     }
 
@@ -183,7 +291,7 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
                 timestamp_writes: None
             });
             
-            cpass.set_pipeline(&self.pipeline);
+            cpass.set_pipeline(&self.orb_pipeline);
             cpass.set_bind_group(0, &self.bind_groups[0], &[]);
             cpass.set_bind_group(1, &self.bind_groups[1], &[]);
             
@@ -197,11 +305,40 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
                 num_workgroups_z as u32
             );
         }
-
+        
         self.features.copy(&mut encoder);
         self.counter.copy(&mut encoder);
+        
+        compute.queue.submit([encoder.finish()]);
 
-        compute.queue.submit(Some(encoder.finish()));
+        let mut encoder_2 = compute.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: None
+        });
+        {
+            let mut cpass_2 = encoder_2.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass_2.set_pipeline(&self.brief_pipeline);
+            cpass_2.set_bind_group(0, &self.bind_groups[0], &[]);
+            cpass_2.set_bind_group(1, &self.bind_groups[1], &[]);
+            cpass_2.set_bind_group(2, &self.bind_groups[2], &[]);
+
+            let num_workgroups_x = (self.config.max_features + 63) / 64;
+            let num_workgroups_y = 1;
+            let num_workgroups_z = 1;
+
+            cpass_2.dispatch_workgroups(
+                num_workgroups_x as u32,
+                num_workgroups_y as u32,
+                num_workgroups_z as u32
+            );
+        }
+
+        self.feature_descriptors.copy(&mut encoder_2);
+
+        compute.queue.submit([encoder_2.finish()]);
     }
 }
 
