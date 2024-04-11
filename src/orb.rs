@@ -296,8 +296,8 @@ impl ComputeProgram<OrbFeatureExtractorConfig> for OrbFeatureExtractor {
             cpass.set_bind_group(1, &self.bind_groups[1], &[]);
             
             cpass.dispatch_workgroups(
-                ((self.config.image_width + 15)/ 16) as u32,
-                ((self.config.image_height + 15) / 16) as u32,
+                ((self.config.image_width + 7)/ 8) as u32,
+                ((self.config.image_height + 7) / 8) as u32,
                 1 as u32
             );
 
