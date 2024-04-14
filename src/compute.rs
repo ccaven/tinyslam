@@ -13,7 +13,7 @@ impl Compute {
             backends: wgpu::Backends::PRIMARY, 
             flags: wgpu::InstanceFlags::empty(), 
             dx12_shader_compiler: wgpu::Dx12Compiler::Fxc, 
-            gles_minor_version: wgpu::Gles3MinorVersion::Automatic 
+            gles_minor_version: wgpu::Gles3MinorVersion::Automatic
         });
     
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.unwrap();
@@ -37,7 +37,10 @@ impl Compute {
     }
 }
 
-pub trait ComputeProgram<Config, Params> {
-    fn init(config: Config, compute: Arc<Compute>) -> Self;
-    fn run(&mut self, params: Params, compute: Arc<Compute>);
+pub trait ComputeProgram {
+    type Config;
+    type Params;
+
+    fn init(config: Self::Config, compute: Arc<Compute>) -> Self;
+    fn run(&mut self, params: Self::Params, compute: Arc<Compute>);
 }

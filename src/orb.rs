@@ -110,7 +110,10 @@ impl OrbFeatureExtractor {
     }
 }
 
-impl ComputeProgram<OrbFeatureExtractorConfig, OrbFeatureExtractorParams> for OrbFeatureExtractor {
+impl ComputeProgram for OrbFeatureExtractor {
+    type Config = OrbFeatureExtractorConfig;
+    type Params = OrbFeatureExtractorParams;
+
     fn init(config: OrbFeatureExtractorConfig, compute: Arc<Compute>) -> OrbFeatureExtractor {
         let image_buffer_size = config.image_width * config.image_height;
         let feature_buffer_size = config.max_features * 4 * 2;

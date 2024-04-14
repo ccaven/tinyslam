@@ -1,0 +1,330 @@
+
+use std::{collections::HashMap, num::NonZeroU64};
+use std::sync::Arc;
+
+use wgpu::BufferUsages;
+
+use crate::compute::{Compute, ComputeProgram};
+
+const STORAGE: BufferUsages = BufferUsages::STORAGE;
+const UNIFORM: BufferUsages = BufferUsages::UNIFORM;
+const COPY_DST: BufferUsages = BufferUsages::COPY_DST;
+const COPY_SRC: BufferUsages = BufferUsages::COPY_SRC;
+
+pub struct OrbConfig {
+    pub image_size: wgpu::Extent3d,
+    pub max_features: u32,
+    pub max_matches: u32
+}
+
+pub struct OrbParams {
+    pub compute_matches: bool
+}
+
+pub struct OrbProgram {
+    pub config: OrbConfig,
+    pub module: wgpu::ShaderModule,
+    pub buffers: HashMap<String, wgpu::Buffer>,
+    pub bind_groups: HashMap<String, wgpu::BindGroup>,
+    pub bind_group_layouts: HashMap<String, wgpu::BindGroupLayout>,
+    pub pipelines: HashMap<String, wgpu::ComputePipeline>,
+    pub pipeline_bind_groups: HashMap<String, Vec<(u32, String)>>
+}
+
+impl OrbProgram {}
+
+impl ComputeProgram for OrbProgram {
+    type Config = OrbConfig;
+    type Params = OrbParams;
+
+    fn init(config: Self::Config, compute: Arc<Compute>) -> Self {
+        
+        let module = compute.device.create_shader_module(wgpu::include_wgsl!("shaders/orb_features_2.wgsl"));
+        
+        let mut buffers = HashMap::new();
+
+        // name, usage, size
+        let buffer_info = [
+            ("counter_reset", STORAGE | COPY_SRC, 4),
+            ("input_image", STORAGE | COPY_DST | COPY_SRC, config.image_size.width * config.image_size.height * 4),
+            ("input_image_size", UNIFORM | COPY_DST, 8),
+            ("grayscale_image", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
+            ("integral_image_in", STORAGE | COPY_DST, config.image_size.width * config.image_size.height * 4),
+            ("integral_image_out", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
+            ("integral_image_stride", UNIFORM | COPY_DST, 4),
+            ("latest_corners", STORAGE | COPY_SRC, config.max_features * 8),
+            ("latest_corner_count", STORAGE | COPY_SRC | COPY_DST, 4),
+            ("latest_descriptors", STORAGE | COPY_SRC, 256 * config.max_features),
+            ("previous_corners", STORAGE | COPY_DST, config.max_features * 8),
+            ("previous_corner_count", STORAGE | COPY_DST, 4),
+            ("corner_matches", STORAGE, config.max_matches * 4),
+            ("corner_match_counter", STORAGE | COPY_DST, 4)
+        ];
+
+        for (name, usage, size) in buffer_info {
+            let buffer = compute.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(name),
+                size: size as u64,
+                usage: usage,
+                mapped_at_creation: false
+            });
+
+            buffers.insert(name.to_owned(), buffer);
+        }
+
+        let mut bind_group_layouts = HashMap::new();
+        let mut bind_groups = HashMap::new();
+
+        // bind group name, ( binding, buffer name, min binding size, read only )
+        let bind_group_info = [
+            ("input_image", vec![
+                (0, "input_image", 4, true),
+                (1, "input_image_size", 8, true),
+                (2, "grayscale_image", 4, false)
+            ]),
+            ("integral_image", vec![
+                (0, "integral_image_in", 4, false),
+                (1, "integral_image_out", 4, false),
+                (2, "integral_image_stride", 4, false)
+            ]),
+            ("fast_corners", vec![
+                (0, "latest_corners", 8, false),
+                (1, "latest_corner_count", 4, false)
+            ]),
+            ("brief_descriptors", vec![
+                (0, "latest_descriptors", 256, false)
+            ]),
+            // ("feature_matches", vec![
+            //     (0, "previous_corners", 8, true),
+            //     (1, "previous_corner_count", 4, true),
+            //     (2, "corner_matches", 4, false),
+            //     (3, "corner_match_counter", 4, false)
+            // ])
+        ];
+
+        for i in 0..bind_group_info.len() {
+
+            let (group_name, entries) = &bind_group_info[i];
+
+            let group_name = group_name.to_owned();
+
+            let mut bind_group_layout_entries = Vec::<wgpu::BindGroupLayoutEntry>::new();
+            let mut bind_group_entries = Vec::<wgpu::BindGroupEntry>::new();
+
+            for (binding, buffer_name, min_binding_size, read_only) in entries {
+
+                let buffer_name = buffer_name.to_owned();
+                let read_only = read_only.to_owned();
+                let binding = binding.to_owned();
+                let min_binding_size = min_binding_size.to_owned();
+
+                let ty = if buffers[buffer_name].usage().contains(UNIFORM) {
+                    wgpu::BufferBindingType::Uniform
+                } else {
+                    wgpu::BufferBindingType::Storage { read_only }
+                };
+
+                bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty, 
+                        has_dynamic_offset: false, 
+                        min_binding_size: Some(NonZeroU64::new(min_binding_size).unwrap())
+                    },
+                    count: None
+                });
+
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding,
+                    resource: buffers[buffer_name].as_entire_binding()
+                });
+            }
+
+            let bind_group_layout = compute.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &bind_group_layout_entries,
+                label: Some(group_name)
+            });
+
+            bind_groups.insert(group_name.to_owned(), compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(group_name),
+                layout: &bind_group_layout,
+                entries: &bind_group_entries
+            }));
+
+            bind_group_layouts.insert(group_name.to_owned(), bind_group_layout);
+
+        }
+    
+        let mut pipelines = HashMap::new();
+        let mut pipeline_bind_groups = HashMap::new();
+
+        // entry point, ( bind group names )
+        let pipeline_info = [
+            ("compute_grayscale", vec![
+                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+            ]),
+            ("compute_integral_image", vec![
+                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+            ]),
+            ("compute_fast_corners", vec![
+                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+            ]),
+            ("compute_brief_descriptors", vec![
+                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+            ]),
+            // ("compute_matches", vec![
+            //     "brief_descriptors", "feature_matches"
+            // ])
+        ];
+
+        for (entry_point, bind_group_names) in pipeline_info {
+            let mut bind_group_names_vec = Vec::new();
+
+            for bind_group_name in bind_group_names {
+                let mut j = 0;
+
+                for i in 0..bind_group_info.len() {
+                    if bind_group_info[i].0 == bind_group_name {
+                        j = i;
+                    }
+                }
+
+                bind_group_names_vec.push((j as u32, bind_group_name.to_owned()));
+            }
+            
+
+            pipeline_bind_groups.insert(entry_point.to_owned(), bind_group_names_vec);
+
+            let mut bind_group_layouts_vec = Vec::new();
+
+            for i in 0..bind_group_info.len() {
+                let name = bind_group_info[i].0;
+                
+                bind_group_layouts_vec.push(&bind_group_layouts[name]);
+            }
+
+            let pipeline_layout = compute.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(entry_point),
+                bind_group_layouts: &bind_group_layouts_vec,
+                push_constant_ranges: &[]
+            });
+
+            let pipeline = compute.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry_point),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point
+            });
+
+            pipelines.insert(entry_point.to_owned(), pipeline);            
+
+            
+        }
+
+        Self {
+            config,
+            module,
+            buffers,
+            bind_group_layouts,
+            bind_groups,
+            pipelines,
+            pipeline_bind_groups
+        }
+
+    }
+
+    fn run(&mut self, params: Self::Params, compute: Arc<Compute>) {
+        
+        let mut encoder = compute.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: None
+        });
+
+        // Reset counters to zero
+        encoder.copy_buffer_to_buffer(
+            &self.buffers["counter_reset"],
+            0,
+            &self.buffers["latest_corner_count"],
+            0,
+            4
+        );
+
+        encoder.copy_buffer_to_buffer(
+            &self.buffers["counter_reset"],
+            0,
+            &self.buffers["corner_match_counter"],
+            0,
+            4
+        );
+
+        
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass.set_pipeline(&self.pipelines["compute_grayscale"]);
+
+            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+            cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
+            cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
+
+            cpass.dispatch_workgroups(
+                (self.config.image_size.width + 7) / 8,
+                (self.config.image_size.height + 7) / 8,
+                1
+            );
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &self.buffers["grayscale_image"],
+            0,
+            &self.buffers["integral_image_in"],
+            0,
+            self.buffers["integral_image_in"].size()
+        );
+
+        let mut integral_image_stride = 2u32;
+        while integral_image_stride < 2u32 * u32::max(self.config.image_size.width, self.config.image_size.height) {
+            compute.queue.write_buffer(
+                &self.buffers["integral_image_stride"],
+                0,
+                bytemuck::cast_slice(&[ integral_image_stride ])
+            );
+
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None
+                });
+
+                cpass.set_pipeline(&self.pipelines["compute_integral_image"]);
+
+                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+                cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
+                cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
+
+                cpass.dispatch_workgroups(
+                    (self.config.image_size.width + 7) / 8,
+                    (self.config.image_size.height + 7) / 8,
+                    1
+                );
+            }
+
+            encoder.copy_buffer_to_buffer(
+                &self.buffers["integral_image_out"],
+                0,
+                &self.buffers["integral_image_in"],
+                0,
+                self.buffers["integral_image_out"].size()
+            );
+            
+            integral_image_stride *= 2;
+        }
+
+        compute.queue.submit(Some(encoder.finish()));
+    }
+}
