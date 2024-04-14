@@ -48,10 +48,10 @@ impl ComputeProgram for OrbProgram {
             ("counter_reset", STORAGE | COPY_SRC, 4),
             ("input_image", STORAGE | COPY_DST | COPY_SRC, config.image_size.width * config.image_size.height * 4),
             ("input_image_size", UNIFORM | COPY_DST, 8),
-            ("grayscale_image", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
             ("integral_image_in", STORAGE | COPY_DST, config.image_size.width * config.image_size.height * 4),
             ("integral_image_out", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
-            ("integral_image_stride", UNIFORM | COPY_DST, 4),
+            ("integral_image_stride", STORAGE | COPY_DST, 4),
+            ("integral_image_vis", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
             ("latest_corners", STORAGE | COPY_SRC, config.max_features * 8),
             ("latest_corner_count", STORAGE | COPY_SRC | COPY_DST, 4),
             ("latest_descriptors", STORAGE | COPY_SRC, 256 * config.max_features),
@@ -79,13 +79,13 @@ impl ComputeProgram for OrbProgram {
         let bind_group_info = [
             ("input_image", vec![
                 (0, "input_image", 4, true),
-                (1, "input_image_size", 8, true),
-                (2, "grayscale_image", 4, false)
+                (1, "input_image_size", 8, true)
             ]),
             ("integral_image", vec![
                 (0, "integral_image_in", 4, false),
                 (1, "integral_image_out", 4, false),
-                (2, "integral_image_stride", 4, false)
+                (2, "integral_image_stride", 4, false),
+                (3, "integral_image_vis", 4, false)
             ]),
             ("fast_corners", vec![
                 (0, "latest_corners", 8, false),
@@ -155,6 +155,30 @@ impl ComputeProgram for OrbProgram {
             bind_group_layouts.insert(group_name.to_owned(), bind_group_layout);
 
         }
+
+        // Add another bind group with the same layout, with with image_in and image_out flipped
+        bind_groups.insert("integral_image_2".to_owned(), compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("integral_image_2"),
+            layout: &bind_group_layouts["integral_image"],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffers["integral_image_out"].as_entire_binding()
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffers["integral_image_in"].as_entire_binding()
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buffers["integral_image_stride"].as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: buffers["integral_image_vis"].as_entire_binding(),
+                },
+            ]
+        }));
     
         let mut pipelines = HashMap::new();
         let mut pipeline_bind_groups = HashMap::new();
@@ -164,7 +188,16 @@ impl ComputeProgram for OrbProgram {
             ("compute_grayscale", vec![
                 "input_image", "integral_image", "fast_corners", "brief_descriptors"
             ]),
+            ("increment_stride", vec![
+                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+            ]),
+            ("zero_stride", vec![
+                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+            ]),
             ("compute_integral_image", vec![
+                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+            ]),
+            ("box_blur_visualization", vec![
                 "input_image", "integral_image", "fast_corners", "brief_descriptors"
             ]),
             ("compute_fast_corners", vec![
@@ -278,21 +311,43 @@ impl ComputeProgram for OrbProgram {
             );
         }
 
-        encoder.copy_buffer_to_buffer(
-            &self.buffers["grayscale_image"],
-            0,
-            &self.buffers["integral_image_in"],
-            0,
-            self.buffers["integral_image_in"].size()
-        );
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
 
-        let mut integral_image_stride = 2u32;
-        while integral_image_stride < 2u32 * u32::max(self.config.image_size.width, self.config.image_size.height) {
-            compute.queue.write_buffer(
-                &self.buffers["integral_image_stride"],
-                0,
-                bytemuck::cast_slice(&[ integral_image_stride ])
-            );
+            cpass.set_pipeline(&self.pipelines["zero_stride"]);
+            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+            
+            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+
+            cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
+            cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
+
+            cpass.dispatch_workgroups(1, 1, 1);
+        }
+
+        let max_stride = 10;
+
+        for i in 0..=max_stride {
+
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None
+                });
+
+                cpass.set_pipeline(&self.pipelines["increment_stride"]);
+                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                
+                cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+
+                cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
+                cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
+
+                cpass.dispatch_workgroups(1, 1, 1);
+            }
 
             {
                 let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -303,7 +358,10 @@ impl ComputeProgram for OrbProgram {
                 cpass.set_pipeline(&self.pipelines["compute_integral_image"]);
 
                 cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-                cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+                
+                // Ping pong to avoid unnecessary copy
+                cpass.set_bind_group(1, &self.bind_groups[if i % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+
                 cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
                 cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
 
@@ -314,17 +372,37 @@ impl ComputeProgram for OrbProgram {
                 );
             }
 
-            encoder.copy_buffer_to_buffer(
-                &self.buffers["integral_image_out"],
-                0,
-                &self.buffers["integral_image_in"],
-                0,
-                self.buffers["integral_image_out"].size()
-            );
-            
-            integral_image_stride *= 2;
+            // encoder.copy_buffer_to_buffer(
+            //     &self.buffers["integral_image_out"],
+            //     0,
+            //     &self.buffers["integral_image_in"],
+            //     0,
+            //     self.buffers["integral_image_in"].size()
+            // );
         }
 
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass.set_pipeline(&self.pipelines["box_blur_visualization"]);
+
+            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+            
+            // Ping pong to avoid unnecessary copy
+            cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+
+            cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
+            cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
+
+            cpass.dispatch_workgroups(
+                (self.config.image_size.width + 7) / 8,
+                (self.config.image_size.height + 7) / 8,
+                1
+            );
+        }
         compute.queue.submit(Some(encoder.finish()));
     }
 }
