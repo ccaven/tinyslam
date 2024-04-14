@@ -79,7 +79,10 @@ impl ComputeProgram for OrbProgram {
         let bind_group_info = [
             ("input_image", vec![
                 (0, "input_image", 4, true),
-                (1, "input_image_size", 8, true)
+                (1, "input_image_size", 8, true),
+                (2, "latest_corners", 8, false),
+                (3, "latest_corner_count", 4, false),
+                (4, "latest_descriptors", 256, false)
             ]),
             ("integral_image", vec![
                 (0, "integral_image_in", 4, false),
@@ -87,19 +90,6 @@ impl ComputeProgram for OrbProgram {
                 (2, "integral_image_stride", 4, false),
                 (3, "integral_image_vis", 4, false)
             ]),
-            ("fast_corners", vec![
-                (0, "latest_corners", 8, false),
-                (1, "latest_corner_count", 4, false)
-            ]),
-            ("brief_descriptors", vec![
-                (0, "latest_descriptors", 256, false)
-            ]),
-            // ("feature_matches", vec![
-            //     (0, "previous_corners", 8, true),
-            //     (1, "previous_corner_count", 4, true),
-            //     (2, "corner_matches", 4, false),
-            //     (3, "corner_match_counter", 4, false)
-            // ])
         ];
 
         for i in 0..bind_group_info.len() {
@@ -186,25 +176,25 @@ impl ComputeProgram for OrbProgram {
         // entry point, ( bind group names )
         let pipeline_info = [
             ("compute_grayscale", vec![
-                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+                "input_image", "integral_image"
             ]),
             ("increment_stride", vec![
-                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+                "input_image", "integral_image"
             ]),
             ("zero_stride", vec![
-                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+                "input_image", "integral_image"
             ]),
             ("compute_integral_image", vec![
-                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+                "input_image", "integral_image"
             ]),
             ("box_blur_visualization", vec![
-                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+                "input_image", "integral_image"
             ]),
             ("compute_fast_corners", vec![
-                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+                "input_image", "integral_image"
             ]),
             ("compute_brief_descriptors", vec![
-                "input_image", "integral_image", "fast_corners", "brief_descriptors"
+                "input_image", "integral_image"
             ]),
             // ("compute_matches", vec![
             //     "brief_descriptors", "feature_matches"
@@ -301,8 +291,6 @@ impl ComputeProgram for OrbProgram {
 
             cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
             cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
-            cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
-            cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
 
             cpass.dispatch_workgroups(
                 (self.config.image_size.width + 7) / 8,
@@ -322,9 +310,6 @@ impl ComputeProgram for OrbProgram {
             
             cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
 
-            cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
-            cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
-
             cpass.dispatch_workgroups(1, 1, 1);
         }
 
@@ -343,9 +328,6 @@ impl ComputeProgram for OrbProgram {
                 
                 cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
 
-                cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
-                cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
-
                 cpass.dispatch_workgroups(1, 1, 1);
             }
 
@@ -362,23 +344,12 @@ impl ComputeProgram for OrbProgram {
                 // Ping pong to avoid unnecessary copy
                 cpass.set_bind_group(1, &self.bind_groups[if i % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
 
-                cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
-                cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
-
                 cpass.dispatch_workgroups(
                     (self.config.image_size.width + 7) / 8,
                     (self.config.image_size.height + 7) / 8,
                     1
                 );
             }
-
-            // encoder.copy_buffer_to_buffer(
-            //     &self.buffers["integral_image_out"],
-            //     0,
-            //     &self.buffers["integral_image_in"],
-            //     0,
-            //     self.buffers["integral_image_in"].size()
-            // );
         }
 
         {
@@ -393,9 +364,6 @@ impl ComputeProgram for OrbProgram {
             
             // Ping pong to avoid unnecessary copy
             cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
-
-            cpass.set_bind_group(2, &self.bind_groups["fast_corners"], &[]);
-            cpass.set_bind_group(3, &self.bind_groups["brief_descriptors"], &[]);
 
             cpass.dispatch_workgroups(
                 (self.config.image_size.width + 7) / 8,

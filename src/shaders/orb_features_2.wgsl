@@ -15,7 +15,18 @@ var<storage, read> input_image: array<u32>;
 @group(0) @binding(1)
 var<uniform> input_image_size: vec2u;
 
-// Group 1 = Integral Image
+// Group 0b = FAST Corner Data
+@group(0) @binding(2)
+var<storage, read_write> latest_corners: array<Corner>;
+
+@group(0) @binding(3)
+var<storage, read_write> latest_corner_count: atomic<u32>;
+
+// Group 0c = BRIEF Descriptor Data
+@group(0) @binding(4)
+var<storage, read_write> latest_descriptors: array<BriefDescriptor>;
+
+// Group 1 = Integral Image (different bind group b/c ping pong)
 @group(1) @binding(0)
 var<storage, read_write> integral_image_in: array<f32>;
 
@@ -27,17 +38,6 @@ var<storage, read_write> integral_image_stride: u32;
 
 @group(1) @binding(3)
 var<storage, read_write> integral_image_vis: array<u32>;
-
-// Group 2 = FAST Corner Data
-@group(2) @binding(0)
-var<storage, read_write> latest_corners: array<Corner>;
-
-@group(2) @binding(1)
-var<storage, read_write> latest_corner_count: atomic<u32>;
-
-// Group 3 = BRIEF Descriptor Data
-@group(3) @binding(0)
-var<storage, read_write> latest_descriptors: array<BriefDescriptor>;
 
 // Helper functions
 
@@ -208,23 +208,43 @@ fn box_blur_visualization(
 /*
 COMPUTE KERNEL 2: FAST Feature Extraction
 
+
+
 */
+
 @compute
 @workgroup_size(8, 8, 1)
 fn compute_fast_corners(
-    @builtin(global_invocation_id) global_id: vec3<u32>
+    @builtin(global_invocation_id) global_id: vec3u,
+    @builtin(workgroup_id) workgroup_id: vec3u,
+    @builtin(local_invocation_id) local_invocation_id: vec3u
 ) {
-    _ = input_image[0];
-    _ = input_image_size.x;
+    if global_id.x < 16 || 
+       global_id.y < 16 || 
+       global_id.x >= input_image_size.x - 16 || 
+       global_id.y >= input_image_size.y - 16
+    {
+        return;
+    }
 
-    _ = integral_image_in[0];
-    _ = integral_image_out[0];
+    // Stage 1: workgroup
 
-    _ = integral_image_stride;
+    let is_corner = true; // TODO
 
-    _ = latest_corners[0];
+    if is_corner {
+        // let index = atomicAdd(&workgroup_counter, 1u);
+        // var corner: Corner;
+        // corner.x = global_id.x;
+        // corner.y = global_id.y;
+        // workgroup_corners[index] = corner;
+    }
 
-    _ = latest_corner_count;
+    workgroupBarrier();
+
+    // ???
+    // Known: workgroup_counter is no longer going to change
+    // Known: workgroup_corners is no longer going to change
+
 }
 
 /*
