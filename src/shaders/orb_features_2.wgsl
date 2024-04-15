@@ -206,7 +206,7 @@ fn box_blur_visualization(
     let vis_g = u32(average * 255.0);
     let vis_b = u32(average * 255.0);
 
-    atomicStore(&integral_image_vis[image_index], (vis_b << 16) | (vis_g << 8) | vis_r);
+    integral_image_vis[image_index] = (vis_b << 16) | (vis_g << 8) | vis_r;
 }
 
 /* COMPUTE KERNEL 2: FAST Feature Extraction */
@@ -257,7 +257,7 @@ fn compute_fast_corners(
     let center_value = rgba_to_gray(read_image_intensity(i32(global_id.x), i32(global_id.y)));
 
     // Shortcut to discard pixels before full FAST check
-    let threshold = 0.25;
+    let threshold = 0.15;
 
     var num_over = 0u;
     var num_under = 0u;
@@ -277,7 +277,7 @@ fn compute_fast_corners(
         }
     }
 
-    if num_over < 3 && num_under < 3 {
+    if num_over >= 3 || num_under >= 3 {
 
         // Full FAST-16
         var is_over: u32 = 0u;
@@ -323,8 +323,8 @@ fn compute_fast_corners(
             let num_chunks_x = (input_image_size.x + 7u) / 8u;
             let chunk_id = workgroup_id.y * num_chunks_x + workgroup_id.x;
 
-            let chunk_index = atomicAdd(&chunk_counters[chunk_id], 1u);
-            //let chunk_index = atomicAdd(&workgroup_counter, 1u);
+            //let chunk_index = atomicAdd(&chunk_counters[chunk_id], 1u);
+            let chunk_index = atomicAdd(&workgroup_counter, 1u);
 
             var feature: Corner;
 
@@ -336,13 +336,14 @@ fn compute_fast_corners(
 
     }
 
-    // workgroupBarrier();
+    workgroupBarrier();
 
-    // if local_invocation_id.x == 0 && local_invocation_id.y == 0 {
-    //     let num_chunks_x = (input_image_size.x + 7u) / 8u;
-    //     let chunk_id = workgroup_id.y * num_chunks_x + workgroup_id.x;
-    //     chunk_counters[chunk_id] = atomicLoad(&workgroup_counter);
-    // }
+    // Only need this to happen once
+    if local_invocation_id.x == 0 && local_invocation_id.y == 0 {
+        let num_chunks_x = (input_image_size.x + 7u) / 8u;
+        let chunk_id = workgroup_id.y * num_chunks_x + workgroup_id.x;
+        chunk_counters[chunk_id] = atomicLoad(&workgroup_counter);
+    }
 
 }
 

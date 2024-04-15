@@ -330,7 +330,10 @@ impl ComputeProgram for OrbProgram {
             cpass.dispatch_workgroups(1, 1, 1);
         }
 
-        let max_stride = 10;
+        let max_stride = u32::max(
+            self.config.image_size.width,
+            self.config.image_size.height
+        ).ilog2();
 
         for i in 0..=max_stride {
 
