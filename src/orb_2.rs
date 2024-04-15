@@ -289,47 +289,38 @@ impl ComputeProgram for OrbProgram {
         });
 
         // Reset counters to zero
-        encoder.copy_buffer_to_buffer(
-            &self.buffers["counter_reset"],
-            0,
-            &self.buffers["corner_match_counter"],
-            0,
-            4
+        // encoder.copy_buffer_to_buffer(
+        //     &self.buffers["counter_reset"],
+        //     0,
+        //     &self.buffers["corner_match_counter"],
+        //     0,
+        //     4
+        // );
+
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None
+        });
+
+        cpass.set_pipeline(&self.pipelines["compute_grayscale"]);
+
+        cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+        cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+
+        cpass.dispatch_workgroups(
+            (self.config.image_size.width + 7) / 8,
+            (self.config.image_size.height + 7) / 8,
+            1
         );
 
+        cpass.set_pipeline(&self.pipelines["zero_stride"]);
+
+        // cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
         
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None
-            });
+        // cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
 
-            cpass.set_pipeline(&self.pipelines["compute_grayscale"]);
-
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
-
-            cpass.dispatch_workgroups(
-                (self.config.image_size.width + 7) / 8,
-                (self.config.image_size.height + 7) / 8,
-                1
-            );
-        }
-
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None
-            });
-
-            cpass.set_pipeline(&self.pipelines["zero_stride"]);
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-            
-            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
-
-            cpass.dispatch_workgroups(1, 1, 1);
-        }
-
+        cpass.dispatch_workgroups(1, 1, 1);
+        
         let max_stride = u32::max(
             self.config.image_size.width,
             self.config.image_size.height
@@ -338,13 +329,13 @@ impl ComputeProgram for OrbProgram {
         for i in 0..=max_stride {
 
             {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: None,
-                    timestamp_writes: None
-                });
+                // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                //     label: None,
+                //     timestamp_writes: None
+                // });
 
                 cpass.set_pipeline(&self.pipelines["increment_stride"]);
-                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                //cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
                 
                 cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
 
@@ -352,14 +343,14 @@ impl ComputeProgram for OrbProgram {
             }
 
             {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: None,
-                    timestamp_writes: None
-                });
+                // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                //     label: None,
+                //     timestamp_writes: None
+                // });
 
                 cpass.set_pipeline(&self.pipelines["compute_integral_image"]);
 
-                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                //cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
                 
                 // Ping pong to avoid unnecessary copy
                 cpass.set_bind_group(1, &self.bind_groups[if i % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
@@ -373,17 +364,17 @@ impl ComputeProgram for OrbProgram {
         }
 
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None
-            });
+            // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: None,
+            //     timestamp_writes: None
+            // });
 
             cpass.set_pipeline(&self.pipelines["box_blur_visualization"]);
 
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+            //cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
             
             // Ping pong to avoid unnecessary copy
-            cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+            //cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
 
             cpass.dispatch_workgroups(
                 (self.config.image_size.width + 7) / 8,
@@ -391,6 +382,8 @@ impl ComputeProgram for OrbProgram {
                 1
             );
         }
+        
+        drop(cpass);
 
         //// FEATURE EXTRACTION
         
@@ -430,12 +423,13 @@ impl ComputeProgram for OrbProgram {
             self.buffers["chunk_counters"].size()
         );
 
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None
+        });
         {
 
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None
-            });
+            
 
             cpass.set_pipeline(&self.pipelines["reset_chunk_stride"]);
 
@@ -460,17 +454,17 @@ impl ComputeProgram for OrbProgram {
         while stride < 2 * num_chunks {
 
             {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: None,
-                    timestamp_writes: None
-                });
+                // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                //     label: None,
+                //     timestamp_writes: None
+                // });
     
                 cpass.set_pipeline(&self.pipelines["compute_integral_indices"]);
     
-                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                //cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
                 
                 // Ping pong to avoid unnecessary copy
-                cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+                //cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
     
                 cpass.dispatch_workgroups(
                     (num_chunks + 15) / 16,
@@ -480,17 +474,17 @@ impl ComputeProgram for OrbProgram {
             }
 
             {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: None,
-                    timestamp_writes: None
-                });
+                // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                //     label: None,
+                //     timestamp_writes: None
+                // });
     
                 cpass.set_pipeline(&self.pipelines["increment_chunk_stride"]);
     
-                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                //cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
                 
                 // Ping pong to avoid unnecessary copy
-                cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+                //cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
     
                 cpass.dispatch_workgroups(
                     1,
@@ -503,16 +497,15 @@ impl ComputeProgram for OrbProgram {
         }
 
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None
-            });
+            // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            //     label: None,
+            //     timestamp_writes: None
+            // });
 
             cpass.set_pipeline(&self.pipelines["load_into_full_array"]);
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-                
+            //cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);  
             // Ping pong to avoid unnecessary copy
-            cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+            //cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
     
             cpass.dispatch_workgroups(
                 (num_chunks + 7) / 8,
@@ -520,6 +513,8 @@ impl ComputeProgram for OrbProgram {
                 1
             );
         }
+
+        drop(cpass);
 
         compute.queue.submit(Some(encoder.finish()));
     }

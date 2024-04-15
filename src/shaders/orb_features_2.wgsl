@@ -332,6 +332,8 @@ fn compute_fast_corners(
             feature.y = global_id.y;
 
             chunk_corners[chunk_id][chunk_index] = feature;
+
+            
         }
 
     }
@@ -344,7 +346,6 @@ fn compute_fast_corners(
         let chunk_id = workgroup_id.y * num_chunks_x + workgroup_id.x;
         chunk_counters[chunk_id] = atomicLoad(&workgroup_counter);
     }
-
 }
 
 @compute
@@ -432,10 +433,9 @@ fn load_into_full_array(
 
 /*
 COMPUTE KERNEL 3: BRIEF Feature Descriptors
-
 */
 @compute
-@workgroup_size(8, 8, 1)
+@workgroup_size(16, 1, 1)
 fn compute_brief_descriptors(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
