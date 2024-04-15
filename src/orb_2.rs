@@ -43,22 +43,32 @@ impl ComputeProgram for OrbProgram {
         
         let mut buffers = HashMap::new();
 
+        let max_features_per_chunk = 64;
+        let num_chunks_x = (config.image_size.width + 7) / 8;
+        let num_chunks_y = (config.image_size.height + 7) / 8;
+        let num_chunks = num_chunks_x * num_chunks_y;
+
         // name, usage, size
         let buffer_info = [
             ("counter_reset", STORAGE | COPY_SRC, 4),
             ("input_image", STORAGE | COPY_DST | COPY_SRC, config.image_size.width * config.image_size.height * 4),
             ("input_image_size", UNIFORM | COPY_DST, 8),
-            ("integral_image_in", STORAGE | COPY_DST, config.image_size.width * config.image_size.height * 4),
-            ("integral_image_out", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
-            ("integral_image_stride", STORAGE | COPY_DST, 4),
-            ("integral_image_vis", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
             ("latest_corners", STORAGE | COPY_SRC, config.max_features * 8),
-            ("latest_corner_count", STORAGE | COPY_SRC | COPY_DST, 4),
+            ("chunk_corners", STORAGE | COPY_SRC, num_chunks * max_features_per_chunk * 8),
+            ("chunk_counters", STORAGE | COPY_SRC | COPY_DST, num_chunks * 4),
+            ("chunk_counters_reset", STORAGE | COPY_SRC, num_chunks * 4),
+            ("chunk_counters_global", STORAGE | COPY_DST, num_chunks * 4),
+            ("chunk_stride", STORAGE, 4),
             ("latest_descriptors", STORAGE | COPY_SRC, 256 * config.max_features),
             ("previous_corners", STORAGE | COPY_DST, config.max_features * 8),
             ("previous_corner_count", STORAGE | COPY_DST, 4),
             ("corner_matches", STORAGE, config.max_matches * 4),
-            ("corner_match_counter", STORAGE | COPY_DST, 4)
+            ("corner_match_counter", STORAGE | COPY_DST, 4),
+            ("integral_image_in", STORAGE | COPY_DST, config.image_size.width * config.image_size.height * 4),
+            ("integral_image_out", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
+            ("integral_image_stride", STORAGE | COPY_DST, 4),
+            ("integral_image_vis", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
+            
         ];
 
         for (name, usage, size) in buffer_info {
@@ -81,8 +91,11 @@ impl ComputeProgram for OrbProgram {
                 (0, "input_image", 4, true),
                 (1, "input_image_size", 8, true),
                 (2, "latest_corners", 8, false),
-                (3, "latest_corner_count", 4, false),
-                (4, "latest_descriptors", 256, false)
+                (3, "chunk_corners", 8 * max_features_per_chunk, false),
+                (4, "chunk_counters", 4, false),
+                (5, "chunk_counters_global", 4, false),
+                (6, "chunk_stride", 4, false),
+                (7, "latest_descriptors", 256, false)
             ]),
             ("integral_image", vec![
                 (0, "integral_image_in", 4, false),
@@ -120,7 +133,7 @@ impl ComputeProgram for OrbProgram {
                     ty: wgpu::BindingType::Buffer { 
                         ty, 
                         has_dynamic_offset: false, 
-                        min_binding_size: Some(NonZeroU64::new(min_binding_size).unwrap())
+                        min_binding_size: Some(NonZeroU64::new(min_binding_size.into()).unwrap())
                     },
                     count: None
                 });
@@ -191,6 +204,18 @@ impl ComputeProgram for OrbProgram {
                 "input_image", "integral_image"
             ]),
             ("compute_fast_corners", vec![
+                "input_image", "integral_image"
+            ]),
+            ("reset_chunk_stride", vec![
+                "input_image", "integral_image"
+            ]),
+            ("increment_chunk_stride", vec![
+                "input_image", "integral_image"
+            ]),
+            ("compute_integral_indices", vec![
+                "input_image", "integral_image"
+            ]),
+            ("load_into_full_array", vec![
                 "input_image", "integral_image"
             ]),
             ("compute_brief_descriptors", vec![
@@ -264,14 +289,6 @@ impl ComputeProgram for OrbProgram {
         });
 
         // Reset counters to zero
-        encoder.copy_buffer_to_buffer(
-            &self.buffers["counter_reset"],
-            0,
-            &self.buffers["latest_corner_count"],
-            0,
-            4
-        );
-
         encoder.copy_buffer_to_buffer(
             &self.buffers["counter_reset"],
             0,
@@ -371,6 +388,136 @@ impl ComputeProgram for OrbProgram {
                 1
             );
         }
+
+        //// FEATURE EXTRACTION
+        
+        encoder.copy_buffer_to_buffer(
+            &self.buffers["chunk_counters_reset"],
+            0,
+            &self.buffers["chunk_counters"],
+            0,
+            self.buffers["chunk_counters"].size()
+        );
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass.set_pipeline(&self.pipelines["compute_fast_corners"]);
+
+            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+            
+            // Ping pong to avoid unnecessary copy
+            cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+
+            cpass.dispatch_workgroups(
+                (self.config.image_size.width + 7) / 8,
+                (self.config.image_size.height + 7) / 8,
+                1
+            );
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &self.buffers["chunk_counters"], 
+            0,
+            &self.buffers["chunk_counters_global"],
+            0,
+            self.buffers["chunk_counters"].size()
+        );
+
+        {
+
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass.set_pipeline(&self.pipelines["reset_chunk_stride"]);
+
+            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+            
+            // Ping pong to avoid unnecessary copy
+            cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+
+            cpass.dispatch_workgroups(
+                1,
+                1,
+                1
+            );
+        }
+
+        let num_chunks_x = (self.config.image_size.width + 7) / 8;
+        let num_chunks_y = (self.config.image_size.height + 7) / 8;
+        let num_chunks = num_chunks_x * num_chunks_y;
+        let max_features_per_chunk = 64;
+
+        let mut stride = 2;
+        while stride < 2 * num_chunks {
+
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None
+                });
+    
+                cpass.set_pipeline(&self.pipelines["compute_integral_indices"]);
+    
+                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                
+                // Ping pong to avoid unnecessary copy
+                cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+    
+                cpass.dispatch_workgroups(
+                    (num_chunks + 15) / 16,
+                    1,
+                    1
+                );
+            }
+
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None
+                });
+    
+                cpass.set_pipeline(&self.pipelines["increment_chunk_stride"]);
+    
+                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                
+                // Ping pong to avoid unnecessary copy
+                cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+    
+                cpass.dispatch_workgroups(
+                    1,
+                    1,
+                    1
+                );
+            }
+
+            stride *= 2;
+        }
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass.set_pipeline(&self.pipelines["load_into_full_array"]);
+            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
+                
+            // Ping pong to avoid unnecessary copy
+            cpass.set_bind_group(1, &self.bind_groups[if max_stride % 2 == 0 { "integral_image" } else { "integral_image_2" } ], &[]);
+    
+            cpass.dispatch_workgroups(
+                (num_chunks + 7) / 8,
+                (max_features_per_chunk + 7) / 8,
+                1
+            );
+        }
+
         compute.queue.submit(Some(encoder.finish()));
     }
 }
