@@ -1,11 +1,12 @@
 
 struct Corner {
     x: u32,
-    y: u32
+    y: u32,
+    angle: f32
 };
 
 struct BriefDescriptor {
-    bits: array<u32, 8>
+    bits: array<atomic<u32>, 8>
 }
 
 // Group 0 = Input Image Information
@@ -16,7 +17,6 @@ var<storage, read> input_image: array<u32>;
 var<uniform> input_image_size: vec2u;
 
 // Group 0b = FAST Corner Data
-
 @group(0) @binding(2)
 var<storage, read_write> latest_corners: array<Corner>;
 
@@ -60,12 +60,13 @@ fn read_image_intensity(x: i32, y: i32) -> vec4f {
 
     let tex_val = input_image[image_index];
 
-    let tex_val_a = f32((tex_val >> 24) & 255) / 255.0;
-    let tex_val_b = f32((tex_val >> 16) & 255) / 255.0;
-    let tex_val_g = f32((tex_val >> 8) & 255) / 255.0;
-    let tex_val_r = f32((tex_val) & 255) / 255.0;
+    // let tex_val_a = f32((tex_val >> 24) & 255) / 255.0;
+    // let tex_val_b = f32((tex_val >> 16) & 255) / 255.0;
+    // let tex_val_g = f32((tex_val >> 8) & 255) / 255.0;
+    // let tex_val_r = f32((tex_val) & 255) / 255.0;
     
-    return vec4f(tex_val_r, tex_val_g, tex_val_b, tex_val_a);
+    // return vec4f(tex_val_r, tex_val_g, tex_val_b, tex_val_a);
+    return unpack4x8unorm(tex_val);
 }
 
 fn rgba_to_gray(col: vec4f) -> f32 {
@@ -77,14 +78,6 @@ fn rgba_to_gray(col: vec4f) -> f32 {
 fn compute_grayscale(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
-    _ = input_image[0];
-    _ = input_image_size.x;
-
-    _ = integral_image_in[0];
-    _ = integral_image_out[0];
-
-    _ = integral_image_stride;
-
     if global_id.x >= input_image_size.x || global_id.y >= input_image_size.y {
         return;
     }
@@ -93,7 +86,8 @@ fn compute_grayscale(
 
     // Write to output texture
     let l = global_id.x + global_id.y * input_image_size.x;
-    integral_image_in[l] = gray;
+    // integral_image_in[l] = gray;
+    integral_image_out[l] = gray;
 }
 
 /*
@@ -120,63 +114,56 @@ fn read_integral_image_out(x: i32, y: i32) -> f32 {
 }
 
 @compute
-@workgroup_size(1, 1, 1)
-fn zero_stride() {
-    integral_image_stride = 0u;
-}
+@workgroup_size(8, 8, 1)
+fn compute_integral_image_x(
+    @builtin(global_invocation_id) global_id: vec3<u32>
+) {
+    if global_id.y >= input_image_size.y {
+        return;
+    }
 
-@compute
-@workgroup_size(1, 1, 1)
-fn increment_stride() {
-    integral_image_stride += 1u;
+    // We launched half as many workgroups, so we need to calculate the real x
+    let h = integral_image_stride - 1u;
+    let h_bits = global_id.x >> h << (h + 1u);
+    let l_bits = global_id.x & ((1u << h) - 1u);
+    let x = h_bits | l_bits | (1u << h);
+
+    if x >= input_image_size.x {
+        return;
+    }
+
+    let y = global_id.y;
+    let half_stride = 1u << (integral_image_stride - 1u);
+    let bx = (x >> integral_image_stride) << integral_image_stride;
+    let lx = x - bx;
+    let nx = bx + half_stride - 1u;
+    integral_image_out[y * input_image_size.x + x] += integral_image_out[y * input_image_size.x + nx];
 }
 
 @compute
 @workgroup_size(8, 8, 1)
-fn compute_integral_image(
+fn compute_integral_image_y(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
-    if global_id.x >= input_image_size.x || global_id.y >= input_image_size.y {
+    if global_id.x >= input_image_size.x {
+        return;
+    }
+
+    let h = integral_image_stride - 1u;
+    let h_bits = global_id.y >> h << (h + 1u);
+    let l_bits = global_id.y & ((1u << h) - 1u);
+    let y = h_bits | l_bits | (1u << h);
+
+    if y >= input_image_size.y {
         return;
     }
 
     let x = global_id.x;
-    let y = global_id.y;
-    
-    let image_index = y * input_image_size.x + x;
-
-    var current_val = read_integral_image_in(x, y);
-
     let half_stride = 1u << (integral_image_stride - 1u);
-
-    let bx = (x >> integral_image_stride) << integral_image_stride;
     let by = (y >> integral_image_stride) << integral_image_stride;
-
-    let lx = x - bx;
     let ly = y - by;
-
-    if lx >= half_stride {
-        current_val += read_integral_image_in(
-            bx + half_stride - 1u, 
-            y
-        );
-    }
-
-    if ly >= half_stride {
-        current_val += read_integral_image_in(
-            x, 
-            by + half_stride - 1u
-        );
-    }
-
-    if lx >= half_stride && ly >= half_stride {
-        current_val += read_integral_image_in(
-            bx + half_stride - 1u,
-            by + half_stride - 1u
-        );
-    }
-
-    integral_image_out[image_index] = current_val;    
+    let ny = by + half_stride - 1u;
+    integral_image_out[y * input_image_size.x + x] += integral_image_out[ny * input_image_size.x + x];
 }
 
 @compute
@@ -193,20 +180,22 @@ fn box_blur_visualization(
     
     let image_index = y * input_image_size.x + x;
 
-    let o = 1;
+    // let o = 3;
 
-    let area_a = read_integral_image_out(i32(x) + o, i32(y) + o);
-    let area_b = read_integral_image_out(i32(x) - o, i32(y) + o);
-    let area_c = read_integral_image_out(i32(x) + o, i32(y) - o);
-    let area_d = read_integral_image_out(i32(x) - o, i32(y) - o);
+    // let area_a = read_integral_image_out(i32(x) + o, i32(y) + o);
+    // let area_b = read_integral_image_out(i32(x) - o, i32(y) + o);
+    // let area_c = read_integral_image_out(i32(x) + o, i32(y) - o);
+    // let area_d = read_integral_image_out(i32(x) - o, i32(y) - o);
 
-    let average = (area_d + area_a - area_b - area_c) / ((f32(2 * o) + 1.0) * (f32(2 * o) + 1.0));
+    // let average = (area_d + area_a - area_b - area_c) / ((f32(2 * o) + 1.0) * (f32(2 * o) + 1.0));
     
-    let vis_r = u32(average * 255.0);
-    let vis_g = u32(average * 255.0);
-    let vis_b = u32(average * 255.0);
+    // let vis_r = u32(average * 255.0);
+    // let vis_g = u32(average * 255.0);
+    // let vis_b = u32(average * 255.0);
 
-    integral_image_vis[image_index] = (vis_b << 16) | (vis_g << 8) | vis_r;
+    // integral_image_vis[image_index] = (vis_b << 16) | (vis_g << 8) | vis_r;
+
+    integral_image_vis[image_index] = input_image[image_index];
 }
 
 /* COMPUTE KERNEL 2: FAST Feature Extraction */
@@ -282,12 +271,15 @@ fn compute_fast_corners(
         // Full FAST-16
         var is_over: u32 = 0u;
         var is_under: u32 = 0u;
+        var centroid = vec2f(0, 0);
 
         for (var i = 0u; i < 16u; i ++) {
             let corner_value = rgba_to_gray(read_image_intensity(
                 i32(global_id.x) + CORNERS_16[i].x,
                 i32(global_id.y) + CORNERS_16[i].y
             ));
+
+            centroid += vec2f(CORNERS_16[i]) * corner_value;
 
             let diff = corner_value - center_value;
             
@@ -330,10 +322,9 @@ fn compute_fast_corners(
 
             feature.x = global_id.x;
             feature.y = global_id.y;
+            feature.angle = atan2(centroid.y, centroid.x);
 
             chunk_corners[chunk_id][chunk_index] = feature;
-
-            
         }
 
     }
@@ -344,24 +335,12 @@ fn compute_fast_corners(
     if local_invocation_id.x == 0 && local_invocation_id.y == 0 {
         let num_chunks_x = (input_image_size.x + 7u) / 8u;
         let chunk_id = workgroup_id.y * num_chunks_x + workgroup_id.x;
-        chunk_counters[chunk_id] = atomicLoad(&workgroup_counter);
-    }
+        chunk_counters[chunk_id] = workgroup_counter;
+    }    
 }
 
 @compute
-@workgroup_size(1, 1, 1)
-fn reset_chunk_stride() {
-    chunk_stride = 1u;
-}
-
-@compute
-@workgroup_size(1, 1, 1)
-fn increment_chunk_stride() {
-    chunk_stride += 1u;
-}
-
-@compute
-@workgroup_size(16, 1, 1)
+@workgroup_size(64, 1, 1)
 fn compute_integral_indices(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
@@ -412,13 +391,11 @@ fn load_into_full_array(
 
     let feature = chunk_corners[chunk_id][feature_id];
 
-    latest_corners[storage_index] = feature;
+    latest_corners[storage_index] = feature;   
 
     let vis_r = 255u;
     let vis_g = 0u;
     let vis_b = 0u;
-    
-    let image_index = feature.x + feature.y * input_image_size.x;
 
     for (var i = 0u; i < 16u; i ++) {
         let pixel_x = u32(i32(feature.x) + CORNERS_16[i].x);
@@ -426,28 +403,56 @@ fn load_into_full_array(
         let image_index = pixel_x + pixel_y * input_image_size.x;
         
         atomicStore(&integral_image_vis[image_index], (vis_b << 16) | (vis_g << 8) | vis_r);
-    }
-
-    
+    }  
 }
+
+@compute
+@workgroup_size(64, 1, 1)
+fn visualize_features(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    // Get # of chunks
+    // let num_chunks_x = (input_image_size.x + 7u) / 8u;
+    // let num_chunks_y = (input_image_size.y + 7u) / 8u;
+    // let last_chunk_index = num_chunks_x * num_chunks_y - 1u;
+    // let num_features = chunk_counters_global[last_chunk_index] + chunk_counters[last_chunk_index];
+
+    // if global_id.x >= num_features {
+    //     return;
+    // }
+
+    // let feature = latest_corners[global_id.x];
+
+    // let vis_r = 255u;
+    // let vis_g = 0u;
+    // let vis_b = 0u;
+
+    // for (var i = 0u; i < 16u; i ++) {
+    //     let pixel_x = u32(i32(feature.x) + CORNERS_16[i].x);
+    //     let pixel_y = u32(i32(feature.y) + CORNERS_16[i].y);
+    //     let image_index = pixel_x + pixel_y * input_image_size.x;
+        
+    //     atomicStore(&integral_image_vis[image_index], (vis_b << 16) | (vis_g << 8) | vis_r);
+    // }    
+}
+
 
 /*
 COMPUTE KERNEL 3: BRIEF Feature Descriptors
 */
 @compute
-@workgroup_size(16, 1, 1)
+@workgroup_size(16, 16, 1)
 fn compute_brief_descriptors(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
-    _ = input_image[0];
-    _ = input_image_size.x;
+   
+    let brief_patch_radius = 15;
 
-    _ = integral_image_in[0];
-    _ = integral_image_out[0];
+    // global_id.x is the feature index
+    // global_id.y is the BRIEF query index (0-255)
 
-    _ = integral_image_stride;
+    // 1. Compute descriptor
 
-    _ = latest_corners[0];
+    // 2. Add to atomic
 
-    _ = latest_descriptors[0];
 }
