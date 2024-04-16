@@ -39,7 +39,7 @@ impl ComputeProgram for OrbProgram {
 
     fn init(config: Self::Config, compute: Arc<Compute>) -> Self {
         
-        let module = compute.device.create_shader_module(wgpu::include_wgsl!("shaders/orb_features_2.wgsl"));
+        let module = compute.device.create_shader_module(wgpu::include_wgsl!("shaders/orb.wgsl"));
         
         let mut buffers = HashMap::new();
 
