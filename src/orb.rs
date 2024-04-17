@@ -1,3 +1,10 @@
+// TODO
+//  - Convert input_image to a texture<f32>
+//  - Merge orb.buffers["input_image"] with vis.base_texture (literally combine)
+//  - Implement feature matching + visualization
+//  - Make sure bit FAST checker is actually faster than manual
+//  - Try different camera / try to turn off autofocus?
+//  - (Optional) Replace output_viz with storage texture
 
 use std::{collections::HashMap, num::NonZeroU64};
 use std::sync::Arc;
@@ -27,8 +34,7 @@ pub struct OrbProgram {
     pub buffers: HashMap<String, wgpu::Buffer>,
     pub bind_groups: HashMap<String, wgpu::BindGroup>,
     pub bind_group_layouts: HashMap<String, wgpu::BindGroupLayout>,
-    pub pipelines: HashMap<String, wgpu::ComputePipeline>,
-    pub pipeline_bind_groups: HashMap<String, Vec<(u32, String)>>
+    pub pipelines: HashMap<String, wgpu::ComputePipeline>
 }
 
 impl OrbProgram {}
@@ -44,10 +50,6 @@ impl ComputeProgram for OrbProgram {
         let mut buffers = HashMap::new();
 
         let bytes_per_feature = 3 * 4;
-        let max_features_per_chunk = 64;
-        let num_chunks_x = (config.image_size.width + 7) / 8;
-        let num_chunks_y = (config.image_size.height + 7) / 8;
-        let num_chunks = num_chunks_x * num_chunks_y;
 
         // name, usage, size
         let buffer_info = [
@@ -55,20 +57,17 @@ impl ComputeProgram for OrbProgram {
             ("input_image", STORAGE | COPY_DST | COPY_SRC, config.image_size.width * config.image_size.height * 4),
             ("input_image_size", UNIFORM | COPY_DST, 8),
             ("latest_corners", STORAGE | COPY_SRC, config.max_features * bytes_per_feature),
-            ("chunk_corners", STORAGE | COPY_SRC, num_chunks * max_features_per_chunk * bytes_per_feature),
-            ("chunk_counters", STORAGE | COPY_SRC | COPY_DST, num_chunks * 4),
-            ("chunk_counters_reset", STORAGE | COPY_SRC, num_chunks * 4),
-            ("chunk_counters_global", STORAGE | COPY_DST, num_chunks * 4),
-            ("chunk_stride", STORAGE | COPY_DST, 4),
             ("latest_descriptors", STORAGE | COPY_SRC, 256 * config.max_features),
             ("previous_corners", STORAGE | COPY_DST, config.max_features * bytes_per_feature),
             ("previous_corner_count", STORAGE | COPY_DST, 4),
             ("corner_matches", STORAGE, config.max_matches * 4),
             ("corner_match_counter", STORAGE | COPY_DST, 4),
-            ("integral_image_in", STORAGE | COPY_DST, config.image_size.width * config.image_size.height * 4),
+            
+            ("latest_corners_counter", STORAGE | COPY_DST, 4),
+
             ("integral_image_out", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
             ("integral_image_stride", STORAGE | COPY_DST, 4),
-            ("integral_image_vis", STORAGE | COPY_SRC, config.image_size.width * config.image_size.height * 4),
+            ("integral_image_vis", STORAGE | COPY_SRC | COPY_DST, config.image_size.width * config.image_size.height * 4),
 
             ("integral_image_precomputed_strides", STORAGE | COPY_SRC | COPY_DST, 4 * 32)
         ];
@@ -89,21 +88,15 @@ impl ComputeProgram for OrbProgram {
 
         // bind group name, ( binding, buffer name, min binding size, read only )
         let bind_group_info = [
-            ("input_image", vec![
+            ("main", vec![
                 (0, "input_image", 4, true),
                 (1, "input_image_size", 8, true),
                 (2, "latest_corners", bytes_per_feature, false),
-                (3, "chunk_corners", bytes_per_feature * max_features_per_chunk, false),
-                (4, "chunk_counters", 4, false),
-                (5, "chunk_counters_global", 4, false),
-                (6, "chunk_stride", 4, false),
-                (7, "latest_descriptors", 256, false)
-            ]),
-            ("integral_image", vec![
-                (0, "integral_image_in", 4, false),
-                (1, "integral_image_out", 4, false),
-                (2, "integral_image_stride", 4, false),
-                (3, "integral_image_vis", 4, false)
+                (3, "latest_descriptors", 256, false),
+                (4, "latest_corners_counter", 4, false),
+                (5, "integral_image_out", 4, false),
+                (6, "integral_image_stride", 4, false),
+                (7, "integral_image_vis", 4, false)
             ]),
         ];
 
@@ -160,100 +153,27 @@ impl ComputeProgram for OrbProgram {
             bind_group_layouts.insert(group_name.to_owned(), bind_group_layout);
 
         }
-
-        // Add another bind group with the same layout, with with image_in and image_out flipped
-        bind_groups.insert("integral_image_2".to_owned(), compute.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("integral_image_2"),
-            layout: &bind_group_layouts["integral_image"],
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffers["integral_image_out"].as_entire_binding()
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: buffers["integral_image_in"].as_entire_binding()
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: buffers["integral_image_stride"].as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: buffers["integral_image_vis"].as_entire_binding(),
-                },
-            ]
-        }));
     
         let mut pipelines = HashMap::new();
-        let mut pipeline_bind_groups = HashMap::new();
 
         // entry point, ( bind group names )
         let pipeline_info = [
-            ("compute_grayscale", vec![
-                "input_image", "integral_image"
-            ]),
-            ("compute_integral_image_x", vec![
-                "input_image", "integral_image"
-            ]),
-            ("compute_integral_image_y", vec![
-                "input_image", "integral_image"
-            ]),
-            ("box_blur_visualization", vec![
-                "input_image", "integral_image"
-            ]),
-            ("compute_fast_corners", vec![
-                "input_image", "integral_image"
-            ]),
-            ("compute_integral_indices", vec![
-                "input_image", "integral_image"
-            ]),
-            ("load_into_full_array", vec![
-                "input_image", "integral_image"
-            ]),
-            ("visualize_features", vec![
-                "input_image", "integral_image"
-            ]),
-            ("compute_brief_descriptors", vec![
-                "input_image", "integral_image"
-            ]),
-            // ("compute_matches", vec![
-            //     "brief_descriptors", "feature_matches"
-            // ])
+            "compute_grayscale",
+            "compute_integral_image_x",
+            "compute_integral_image_y",
+            "compute_fast_corners",
+            "visualize_features",
+            "compute_brief_descriptors",
+            // "compute_matches"
         ];
 
-        for (entry_point, bind_group_names) in pipeline_info {
-            let mut bind_group_names_vec = Vec::new();
+        let pipeline_layout = compute.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Generic pipeline layout"),
+            bind_group_layouts: &[&bind_group_layouts["main"]],
+            push_constant_ranges: &[]
+        });
 
-            for bind_group_name in bind_group_names {
-                let mut j = 0;
-
-                for i in 0..bind_group_info.len() {
-                    if bind_group_info[i].0 == bind_group_name {
-                        j = i;
-                    }
-                }
-
-                bind_group_names_vec.push((j as u32, bind_group_name.to_owned()));
-            }
-            
-
-            pipeline_bind_groups.insert(entry_point.to_owned(), bind_group_names_vec);
-
-            let mut bind_group_layouts_vec = Vec::new();
-
-            for i in 0..bind_group_info.len() {
-                let name = bind_group_info[i].0;
-                
-                bind_group_layouts_vec.push(&bind_group_layouts[name]);
-            }
-
-            let pipeline_layout = compute.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(entry_point),
-                bind_group_layouts: &bind_group_layouts_vec,
-                push_constant_ranges: &[]
-            });
-
+        for entry_point in pipeline_info {
             let pipeline = compute.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry_point),
                 layout: Some(&pipeline_layout),
@@ -261,9 +181,7 @@ impl ComputeProgram for OrbProgram {
                 entry_point
             });
 
-            pipelines.insert(entry_point.to_owned(), pipeline);            
-
-            
+            pipelines.insert(entry_point.to_owned(), pipeline);              
         }
 
         {
@@ -281,8 +199,7 @@ impl ComputeProgram for OrbProgram {
             buffers,
             bind_group_layouts,
             bind_groups,
-            pipelines,
-            pipeline_bind_groups
+            pipelines
         }
 
     }
@@ -301,8 +218,7 @@ impl ComputeProgram for OrbProgram {
 
             cpass.set_pipeline(&self.pipelines["compute_grayscale"]);
 
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+            cpass.set_bind_group(0, &self.bind_groups["main"], &[]);
 
             cpass.dispatch_workgroups(
                 (self.config.image_size.width + 7) / 8,
@@ -332,8 +248,7 @@ impl ComputeProgram for OrbProgram {
 
                 cpass.set_pipeline(&self.pipelines["compute_integral_image_x"]);
                 
-                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-                cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+                cpass.set_bind_group(0, &self.bind_groups["main"], &[]);
 
                 cpass.dispatch_workgroups(
                     (self.config.image_size.width / 2 + 7) / 8,
@@ -350,8 +265,7 @@ impl ComputeProgram for OrbProgram {
 
                 cpass.set_pipeline(&self.pipelines["compute_integral_image_y"]);
                 
-                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-                cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+                cpass.set_bind_group(0, &self.bind_groups["main"], &[]);
 
                 cpass.dispatch_workgroups(
                     (self.config.image_size.width + 7) / 8,
@@ -361,23 +275,16 @@ impl ComputeProgram for OrbProgram {
             }
         }
 
+        encoder.copy_buffer_to_buffer(&self.buffers["counter_reset"], 0, &self.buffers["latest_corners_counter"], 0, 4);
+
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None
-            }); 
-
-            cpass.set_pipeline(&self.pipelines["box_blur_visualization"]);
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
-
-            cpass.dispatch_workgroups(
-                (self.config.image_size.width + 7) / 8,
-                (self.config.image_size.height + 7) / 8,
-                1
-            );
+            });
 
             cpass.set_pipeline(&self.pipelines["compute_fast_corners"]);
+            cpass.set_bind_group(0, &self.bind_groups["main"], &[]);
             cpass.dispatch_workgroups(
                 (self.config.image_size.width + 7) / 8,
                 (self.config.image_size.height + 7) / 8,
@@ -385,62 +292,17 @@ impl ComputeProgram for OrbProgram {
             );
         }
 
-        encoder.copy_buffer_to_buffer(
-            &self.buffers["chunk_counters"],
-            0,
-            &self.buffers["chunk_counters_global"],
-            0,
-            self.buffers["chunk_counters_global"].size()
-        );
-        
-        let num_chunks_x = (self.config.image_size.width + 7) / 8;
-        let num_chunks_y = (self.config.image_size.height + 7) / 8;
-        let num_chunks = num_chunks_x * num_chunks_y;
-        let max_features_per_chunk = 64;
-
-        let mut stride = 2;
-        let mut i = 1;
-        while stride < 2 * num_chunks {
-
-            encoder.copy_buffer_to_buffer(
-                &self.buffers["integral_image_precomputed_strides"],
-                i * 4,
-                &self.buffers["chunk_stride"],
-                0,
-                4
-            );
-
-            {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: None,
-                    timestamp_writes: None
-                }); 
-
-                cpass.set_pipeline(&self.pipelines["compute_integral_indices"]);
-                cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-                cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
-                cpass.dispatch_workgroups(
-                    (num_chunks + 63) / 64,
-                    1,
-                    1
-                );
-            }            
-            
-            stride *= 2;
-            i += 1;
-        }
-
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None
             }); 
-            cpass.set_pipeline(&self.pipelines["load_into_full_array"]);
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+
+            cpass.set_pipeline(&self.pipelines["compute_brief_descriptors"]);
+            cpass.set_bind_group(0, &self.bind_groups["main"], &[]);
             cpass.dispatch_workgroups(
-                (num_chunks + 7) / 8,
-                (max_features_per_chunk + 7) / 8,
+                (self.config.max_features + 1) / 2,
+                8,
                 1
             );
         }
@@ -451,8 +313,7 @@ impl ComputeProgram for OrbProgram {
                 timestamp_writes: None
             }); 
             cpass.set_pipeline(&self.pipelines["visualize_features"]);
-            cpass.set_bind_group(0, &self.bind_groups["input_image"], &[]);
-            cpass.set_bind_group(1, &self.bind_groups["integral_image"], &[]);
+            cpass.set_bind_group(0, &self.bind_groups["main"], &[]);
             cpass.dispatch_workgroups(
                 (self.config.max_features + 63) / 64,
                 1,
