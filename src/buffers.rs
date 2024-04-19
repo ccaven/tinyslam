@@ -1,4 +1,4 @@
-use crate::compute::Compute;
+use tiny_wgpu::Compute;
 
 
 /** Helper struct to couple storage and staging buffers */

@@ -564,6 +564,7 @@ dependencies = [
  "bytemuck",
  "flume",
  "pollster",
+ "tiny_wgpu",
  "wgpu",
 ]
 
@@ -765,6 +766,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.58",
+]
+
+[[package]]
+name = "tiny_wgpu"
+version = "0.1.0"
+dependencies = [
+ "wgpu",
 ]
 
 [[package]]

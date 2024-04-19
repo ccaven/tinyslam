@@ -36,23 +36,25 @@ var<storage, read_write> integral_image_stride: u32;
 @group(0) @binding(7)
 var<storage, read_write> integral_image_vis: array<atomic<u32>>;
 
+@group(0) @binding(8)
+var<storage, read> previous_corners: array<Corner>;
+
+@group(0) @binding(9)
+var<storage, read> previous_descriptors: array<u32>;
+
+@group(0) @binding(10)
+var<storage, read> previous_corners_counter: u32;
+
+var<push_constant> integral_image_stride_pc: u32;
+
 // Helper functions
 
 fn read_image_intensity(x: i32, y: i32) -> vec4f {
     if x < 0 || y < 0 || x >= i32(input_image_size.x) || y >= i32(input_image_size.y) {
         return vec4f(0, 0, 0, 0);
     }
-
     let image_index = u32(y * i32(input_image_size.x) + x);
-
     let tex_val = input_image[image_index];
-
-    // let tex_val_a = f32((tex_val >> 24) & 255) / 255.0;
-    // let tex_val_b = f32((tex_val >> 16) & 255) / 255.0;
-    // let tex_val_g = f32((tex_val >> 8) & 255) / 255.0;
-    // let tex_val_r = f32((tex_val) & 255) / 255.0;
-    
-    // return vec4f(tex_val_r, tex_val_g, tex_val_b, tex_val_a);
     return unpack4x8unorm(tex_val);
 }
 
@@ -97,8 +99,25 @@ fn read_integral_image_out(x: i32, y: i32) -> f32 {
     }
 }
 
+fn compute_local_average(x: u32, y: u32, r: u32) -> f32 {
+    let d = r * 2u + 1u;
+    let top_left_index = (x - r) + (y - r) * input_image_size.x;
+    let top_right_index = top_left_index + d;
+    let bottom_left_index = top_left_index + d * input_image_size.x;
+    let bottom_right_index = bottom_left_index + d;
+
+    let s = integral_image_out[bottom_right_index] + 
+            integral_image_out[top_left_index] - 
+            integral_image_out[top_right_index] - 
+            integral_image_out[bottom_left_index];
+    
+    let a = f32(d * d);
+    
+    return s / a;
+}
+
 @compute
-@workgroup_size(8, 8, 1)
+@workgroup_size(16, 4, 1)
 fn compute_integral_image_x(
     @builtin(global_invocation_id) global_id: vec3<u32>
 ) {
@@ -106,8 +125,10 @@ fn compute_integral_image_x(
         return;
     }
 
+    let stride = integral_image_stride_pc;
+
     // We launched half as many workgroups, so we need to calculate the real x
-    let h = integral_image_stride - 1u;
+    let h = stride - 1u;
     let h_bits = global_id.x >> h << (h + 1u);
     let l_bits = global_id.x & ((1u << h) - 1u);
     let x = h_bits | l_bits | (1u << h);
@@ -117,11 +138,13 @@ fn compute_integral_image_x(
     }
 
     let y = global_id.y;
-    let half_stride = 1u << (integral_image_stride - 1u);
-    let bx = (x >> integral_image_stride) << integral_image_stride;
+    let half_stride = 1u << (stride - 1u);
+    let bx = (x >> stride) << stride;
     let lx = x - bx;
     let nx = bx + half_stride - 1u;
-    integral_image_out[y * input_image_size.x + x] += integral_image_out[y * input_image_size.x + nx];
+    if lx >= half_stride {
+        integral_image_out[y * input_image_size.x + x] += integral_image_out[y * input_image_size.x + nx];
+    }
 }
 
 @compute
@@ -133,7 +156,9 @@ fn compute_integral_image_y(
         return;
     }
 
-    let h = integral_image_stride - 1u;
+    let stride = integral_image_stride_pc;
+
+    let h = stride - 1u;
     let h_bits = global_id.y >> h << (h + 1u);
     let l_bits = global_id.y & ((1u << h) - 1u);
     let y = h_bits | l_bits | (1u << h);
@@ -143,11 +168,13 @@ fn compute_integral_image_y(
     }
 
     let x = global_id.x;
-    let half_stride = 1u << (integral_image_stride - 1u);
-    let by = (y >> integral_image_stride) << integral_image_stride;
+    let half_stride = 1u << (stride - 1u);
+    let by = (y >> stride) << stride;
     let ly = y - by;
     let ny = by + half_stride - 1u;
-    integral_image_out[y * input_image_size.x + x] += integral_image_out[ny * input_image_size.x + x];
+    if ly >= half_stride {
+        integral_image_out[y * input_image_size.x + x] += integral_image_out[ny * input_image_size.x + x];
+    }
 }
 
 var<private> CORNERS_4: array<vec2i, 4> = array(
@@ -286,30 +313,30 @@ fn compute_fast_corners(
 
             
 
-            // var over_streak = 0u;
-            // var max_over_streak = 0u;
-            // var under_streak = 0u;
-            // var max_under_streak = 0u;
-            // for (var i = 0u; i < 24u; i ++) {
-            //     let j = i % 16u;
-            //     if extractBits(is_over, j, 1u) == 1u {
-            //         over_streak ++;
-            //         max_over_streak = max(over_streak, max_over_streak);
-            //     } else {
-            //         over_streak = 0u;
-            //     }
-            //     if extractBits(is_under, j, 1u) == 1u {
-            //         under_streak ++;
-            //         max_under_streak = max(under_streak, max_under_streak);
-            //     } else {
-            //         under_streak = 0u;
-            //     }
-            // }
+            var over_streak = 0u;
+            var max_over_streak = 0u;
+            var under_streak = 0u;
+            var max_under_streak = 0u;
+            for (var i = 0u; i < 24u; i ++) {
+                let j = i % 16u;
+                if extractBits(is_over, j, 1u) == 1u {
+                    over_streak ++;
+                    max_over_streak = max(over_streak, max_over_streak);
+                } else {
+                    over_streak = 0u;
+                }
+                if extractBits(is_under, j, 1u) == 1u {
+                    under_streak ++;
+                    max_under_streak = max(under_streak, max_under_streak);
+                } else {
+                    under_streak = 0u;
+                }
+            }
 
-            // let streak_c = max_over_streak > 11u || max_under_streak > 11u;
+            let streak_c = max_over_streak > 11u || max_under_streak > 11u;
 
             //if max(max_over_streak, max_under_streak) > 11u {
-            if streak {
+            if streak_c {
                 let workgroup_index = atomicAdd(&workgroup_counter, 1u);
 
                 var feature: Corner;
@@ -343,6 +370,26 @@ fn compute_fast_corners(
     let feature = workgroup_corners[local_invocation_index];
     let global_index = workgroup_global_index + local_invocation_index;
     latest_corners[global_index] = feature;  
+}
+
+@compute
+@workgroup_size(8, 8, 1)
+fn visualize_box_blur(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if global_id.x >= input_image_size.x || global_id.y >= input_image_size.y {
+        return;
+    }
+
+    let r = 5u;
+    let avg = compute_local_average(global_id.x, global_id.y, r);
+
+    let vis_r = u32(avg * 255.0);
+    let vis_g = u32(avg * 255.0);
+    let vis_b = u32(avg * 255.0);
+
+    let image_index = global_id.x + global_id.y * input_image_size.x;
+    integral_image_vis[image_index] = (vis_b << 16) | (vis_g << 8) | vis_r;
 }
 
 @compute
@@ -634,18 +681,6 @@ var<private> brief_descriptors: array<vec4i, 256> = array(
     vec4i(-1,-6, 0,-11)
 );
 
-fn compute_local_average(x: u32, y: u32, r: u32) -> f32 {
-    let d = r * 2u + 1u;
-    let top_left_index = (x - r) + (y - r) * input_image_size.x;
-    let top_right_index = top_left_index + d;
-    let bottom_left_index = top_left_index + d * input_image_size.x;
-    let bottom_right_index = bottom_left_index + d;
-
-    let s = integral_image_out[bottom_right_index] + integral_image_out[top_left_index] - integral_image_out[top_right_index] - integral_image_out[bottom_left_index];
-    let a = f32(d * d);
-    return s / a;
-}
-
 @compute
 @workgroup_size(32, 2, 1)
 fn compute_brief_descriptors(
@@ -654,7 +689,6 @@ fn compute_brief_descriptors(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
     @builtin(local_invocation_index) local_index: u32
 ) {
-   
     let feature_index = global_id.x;
     let descriptor_index = global_id.y;
     let descriptor_id = local_id.x;
@@ -663,28 +697,35 @@ fn compute_brief_descriptors(
         return;
     }
 
-    let brief_patch_radius = 15u;
-
     let feature = latest_corners[feature_index];
     let test_point = brief_descriptors[descriptor_index];
 
     // TODO: Rotate test point based on feature angle
+    let st = sin(feature.angle);
+    let ct = cos(feature.angle);
+
+    let m = mat2x2f(
+        ct, -st,
+        st, ct
+    );
+
+    let test_point_a = vec2i(round(m * vec2f(test_point.xy)));
+    let test_point_b = vec2i(round(m * vec2f(test_point.zw)));
+
     let avg_1 = compute_local_average(
-        u32(i32(feature.x) + test_point.x), 
-        u32(i32(feature.y) + test_point.y), 
+        u32(i32(feature.x) + test_point_a.x), 
+        u32(i32(feature.y) + test_point_a.y), 
         2u
     );
     let avg_2 = compute_local_average(
-        u32(i32(feature.x) + test_point.z), 
-        u32(i32(feature.y) + test_point.w), 
+        u32(i32(feature.x) + test_point_b.x), 
+        u32(i32(feature.y) + test_point_b.y), 
         2u
     );
 
-    let bit_on = avg_1 < avg_2;
-
-    if bit_on {
+    if avg_1 > avg_2 {
         let descriptor_bit = local_id.y;
-        atomicAdd(&current_descriptors[descriptor_id], 1u << descriptor_bit);
+        atomicOr(&current_descriptors[descriptor_id], 1u << descriptor_bit);
     }
 
     workgroupBarrier();
@@ -695,4 +736,46 @@ fn compute_brief_descriptors(
 
     let which_u32 = workgroup_id.y;
     latest_descriptors[feature_index * 8u + which_u32] = current_descriptors[descriptor_id];
+}
+
+@compute
+@workgroup_size(8, 8, 1)
+fn match_features(
+    @builtin(global_invocation_id) global_id: vec3<u32>
+) {
+    let i = global_id.x;
+    let j = global_id.y;
+
+    if i >= latest_corners_counter || j >= previous_corners_counter {
+        return;
+    }
+
+    var score = 0u;
+    for (var k = 0u; k < 8u; k ++) {
+        score += countOneBits(
+            ~(latest_descriptors[i * 8 + k] ^
+             previous_descriptors[j * 8 + k])
+        );
+    }
+
+    if score == 256u {
+        // It's a match!
+        // Rasterize the line
+
+        let feature_a = latest_corners[i];
+        let feature_b = latest_corners[j];
+
+        for (var l = 0u; l < 100u; l ++) {
+            let px = feature_a.x + (feature_b.x * l - feature_a.x * l) / 100u;
+            let py = feature_a.y + (feature_b.y * l - feature_a.y * l) / 100u;
+
+            let image_index = px + py * input_image_size.x;
+
+            let vis_r = 0u;
+            let vis_g = 0u;
+            let vis_b = 255u;
+
+            atomicStore(&integral_image_vis[image_index], (vis_b << 16) | (vis_g << 8) | vis_r);
+        }
+    }
 }
