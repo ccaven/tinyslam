@@ -10,6 +10,9 @@ var<storage, read> corners_counter: u32;
 @group(0) @binding(3)
 var gaussian_blur: texture_2d<f32>;
 
+@group(0) @binding(4)
+var grayscale: texture_2d<f32>;
+
 var<private> CORNERS_16: array<vec2i, 16> = array(
     vec2i(-3, 0),
     vec2i(-3, -1),
@@ -40,11 +43,11 @@ fn corner_visualization(
 
     let corner = corners[global_id.x];
     let pos = vec2i(corner);
-
-    let gaussian_center = textureLoad(gaussian_blur, pos, 0).x;
-    let dx = textureLoad(gaussian_blur, pos + vec2i(0, 2), 0).x - gaussian_center;
-    let dy = textureLoad(gaussian_blur, pos + vec2i(2, 0), 0).x - gaussian_center;
-    let normed = normalize(vec2f(dx, dy));
+    var centroid: vec2f;
+    for (var i = 0; i < 16; i ++) {
+        centroid += vec2f(CORNERS_16[i]) * textureLoad(grayscale, pos + CORNERS_16[i], 0).x;
+    }
+    let normed = normalize(centroid);
 
     for (var i = 0; i < 16; i ++) {
         let point = pos + CORNERS_16[i];

@@ -5,9 +5,15 @@ var<storage, read> latest_descriptors: array<array<u32, 8>>;
 var<storage, read> previous_descriptors: array<array<u32, 8>>;
 
 @group(0) @binding(2)
-var<storage, read_write> matches: array<u32>;
+var<storage, read> latest_corners_counter: u32;
 
 @group(0) @binding(3)
+var<storage, read> previous_corners_counter: u32;
+
+@group(0) @binding(4)
+var<storage, read_write> matches: array<u32>;
+
+@group(0) @binding(5)
 var<storage, read_write> matches_counter: atomic<u32>;
 
 var<workgroup> counter: atomic<u32>;
@@ -21,4 +27,10 @@ fn feature_matching(
     @builtin(global_invocation_id) global_id: vec3u
 ) {
     
+    if (global_id.x >= latest_corners_counter || global_id.y >= previous_corners_counter) {
+        return;
+    }
+
+    // Check for matches
+
 }

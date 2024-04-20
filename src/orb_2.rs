@@ -7,7 +7,7 @@ TODO:
 use std::sync::Arc;
 
 use wgpu::{
-    core::device::queue, BufferUsages, TextureUsages
+    BufferUsages, TextureUsages
 };
 
 use tiny_wgpu::{
@@ -105,8 +105,38 @@ impl OrbProgram<'_> {
         );
 
         program.add_buffer(
-            "latest_descriptors",
+            "previous_corners",
             BufferUsages::STORAGE,
+            (config.max_features * 8) as u64
+        );
+
+        program.add_buffer(
+            "previous_corners_counter",
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            4
+        );
+
+        program.add_buffer(
+            "feature_matches",
+            BufferUsages::STORAGE,
+            (config.max_features * 4) as u64
+        );
+
+        program.add_buffer(
+            "feature_matches_counter", 
+            BufferUsages::STORAGE | BufferUsages::COPY_DST, 
+            4
+        );
+
+        program.add_buffer(
+            "latest_descriptors",
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            (config.max_features * 8 * 4) as u64
+        );
+
+        program.add_buffer(
+            "previous_descriptors",
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
             (config.max_features * 8 * 4) as u64
         );
 
@@ -178,7 +208,8 @@ impl OrbProgram<'_> {
                 BindGroupItem::StorageTexture { label: "visualization", access: wgpu::StorageTextureAccess::WriteOnly },
                 BindGroupItem::StorageBuffer { label: "latest_corners", min_binding_size: 8, read_only: true },
                 BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
-                BindGroupItem::Texture { label: "gaussian_blur" }
+                BindGroupItem::Texture { label: "gaussian_blur" },
+                BindGroupItem::Texture { label: "grayscale_image" },
             ]);
 
             program.add_compute_pipelines("corner_visualization", &["corner_visualization"], &["corner_visualization"], &[]);
@@ -190,7 +221,8 @@ impl OrbProgram<'_> {
                 BindGroupItem::Texture { label: "gaussian_blur" },
                 BindGroupItem::StorageBuffer { label: "latest_corners", min_binding_size: 8, read_only: true },
                 BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
-                BindGroupItem::StorageBuffer { label: "latest_descriptors", min_binding_size: 8 * 4, read_only: false }
+                BindGroupItem::StorageBuffer { label: "latest_descriptors", min_binding_size: 8 * 4, read_only: false },
+                BindGroupItem::Texture { label: "grayscale_image" }
             ]);
 
             program.add_compute_pipelines("feature_descriptors", &["feature_descriptors"], &["feature_descriptors"], &[]);
@@ -198,7 +230,14 @@ impl OrbProgram<'_> {
 
         // Stage 6: Feature matching
         {
-
+            program.add_bind_group("feature_matching", &[
+                BindGroupItem::StorageBuffer { label: "latest_descriptors", min_binding_size: 8 * 4, read_only: true },
+                BindGroupItem::StorageBuffer { label: "previous_descriptors", min_binding_size: 8 * 4, read_only: true },
+                BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
+                BindGroupItem::StorageBuffer { label: "previous_corners_counter", min_binding_size: 4, read_only: true },
+                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 4, read_only: false },
+                BindGroupItem::StorageBuffer { label: "feature_matches_counter", min_binding_size: 4, read_only: false },
+            ]);
         }
 
         Self {
@@ -213,6 +252,7 @@ impl OrbProgram<'_> {
         });
 
         encoder.clear_buffer(&self.program.buffers["latest_corners_counter"], 0, Some(4));
+        encoder.clear_buffer(&self.program.buffers["feature_matches_counter"], 0, Some(4));
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

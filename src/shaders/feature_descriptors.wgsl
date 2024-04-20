@@ -10,6 +10,9 @@ var<storage, read> corners_counter: u32;
 @group(0) @binding(3)
 var<storage, read_write> descriptors: array<array<u32, 8>>;
 
+@group(0) @binding(4)
+var grayscale: texture_2d<f32>;
+
 var<workgroup> current_descriptors: array<atomic<u32>, 2>;
 
 var<private> brief_descriptors: array<vec4i, 256> = array(
@@ -271,6 +274,25 @@ var<private> brief_descriptors: array<vec4i, 256> = array(
     vec4i(-1,-6, 0,-11)
 );
 
+var<private> CORNERS_16: array<vec2i, 16> = array(
+    vec2i(-3, 0),
+    vec2i(-3, -1),
+    vec2i(-2, -2),
+    vec2i(-1, -3),
+    vec2i(0, -3),
+    vec2i(1, -3),
+    vec2i(2, -2),
+    vec2i(3, -1),
+    vec2i(3, 0),
+    vec2i(3, 1),
+    vec2i(2, 2),
+    vec2i(1, 3),
+    vec2i(0, 3),
+    vec2i(-1, 3),
+    vec2i(-2, 2),
+    vec2i(-3, 1)
+);
+
 @compute
 @workgroup_size(8, 8, 1)
 fn feature_descriptors(
@@ -280,13 +302,39 @@ fn feature_descriptors(
         return;
     }
 
-    
-    // Perform 32 tests
+    let corner = corners[global_id.x];
+    let pos = vec2i(corner);
 
+    // Compute orientation
+    var centroid: vec2f;
+    for (var i = 0; i < 16; i ++) {
+        centroid += vec2f(CORNERS_16[i]) * textureLoad(grayscale, pos + CORNERS_16[i], 0).x;
+    }
+    let normed = normalize(centroid);
+
+    let rot = mat2x2f(
+        normed.x, -normed.y,
+        normed.y,  normed.x
+    );
 
     // Compute direction
-    // Does dfdx work?
     var data: array<u32, 8>;
+
+    var k = 0u;
+    for (var i = 0u; i < 8u; i ++) {
+        for (var j = 0u; j < 32u; j ++) {
+            let test_point = brief_descriptors[k];
+
+            let p1 = textureLoad(grayscale, pos + test_point.xy, 0).x;
+            let p2 = textureLoad(grayscale, pos + test_point.zw, 0).x;
+
+            if p1 < p2 {
+                data[i] |= 1u << j;
+            }
+
+            k += 1u;
+        }
+    }
 
     descriptors[global_id.x] = data;
 }

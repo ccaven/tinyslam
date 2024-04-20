@@ -54,7 +54,7 @@ fn corner_detector(
     if (all(global_id.xy > vec2u(16, 16)) && all(global_id.xy < textureDimensions(texture))) {
         let center_value = textureLoad(texture, global_id.xy, 0).x;
 
-        let threshold = 0.20;
+        let threshold = 0.15;
 
         let id_i32 = vec2i(global_id.xy);
 
