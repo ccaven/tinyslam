@@ -1,10 +1,20 @@
 # orbslam_gpu
 
-The goals of this project are implementing these techniques with compute shaders:
-1. Rotated FAST feature matching
-2. Oriented BRIEF feature descriptors
-3. Cross-frame feature matching
-4. Local bundle adjustment
+This project aims to implement ORB-SLAM using `wgpu` compute shaders.
 
-The bonus goals are to implement these techniques:
-1. Loop closing via essential graph
+Progess on compute shader items:
+ - [ ] Hardware accelerated video decoding
+ - [x] FAST Corner Detection
+ - [ ] Hierarchical features
+ - [x] Gaussian blur
+ - [x] Rotated BRIEF Feature Descriptors
+ - [ ] Feature matching
+ - [ ] Keypoint detection
+
+Progress on non-compute shader items:
+ - [ ] Local bundle adjustment
+ - [ ] Global bundle adjustment / loop closing
+
+## Implementation Notes
+
+This project uses the [tiny_wgpu](https://github.com/ccaven/tiny_wgpu) project to reduce the amount of `wgpu` boilerplate.
