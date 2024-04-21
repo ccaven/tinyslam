@@ -50,7 +50,7 @@ fn corner_visualization(
     let normed = normalize(centroid);
 
     for (var i = 0; i < 16; i ++) {
-        let point = pos + CORNERS_16[i];
+        let point = pos * 2i + CORNERS_16[i];
         let x = point.x;
         let y = i32(textureDimensions(texture).y - 1u) - point.y;
 

@@ -11,32 +11,33 @@ var<storage, read> latest_corners_counter: u32;
 var<storage, read> previous_corners_counter: u32;
 
 @group(0) @binding(4)
-var<storage, read_write> feature_matches: array<vec2u>;
+var<storage, read_write> feature_matches: array<atomic<u32>>;
 
-@group(0) @binding(5)
-var<storage, read_write> feature_matches_counter: atomic<u32>;
+var<workgroup> workgroup_score: atomic<u32>;
 
 @compute
-@workgroup_size(8, 8, 1)
+@workgroup_size(1, 64, 1)
 fn feature_matching(
-    @builtin(global_invocation_id) global_id: vec3u
+    @builtin(global_invocation_id) global_id: vec3u,
+    @builtin(local_invocation_index) local_index: u32
 ) { 
     if (global_id.x >= latest_corners_counter || global_id.y >= previous_corners_counter) {
         return;
     }
 
-    // Check for matches
-    var is_match = false;
-    var workgroup_index: u32;
-
-    let threshold = 64u;
     var bad_bits = 0u;
     for (var i = 0u; i < 8u; i ++) {
         bad_bits += countOneBits(latest_descriptors[global_id.x][i] ^ previous_descriptors[global_id.y][i]);
     }
-    if bad_bits < threshold {
-        // It is a match!
-        let index = atomicAdd(&feature_matches_counter, 1u);
-        feature_matches[index] = global_id.xy;
+    let score = 256u - bad_bits;
+
+    let item = (score << 16u) | global_id.y;
+
+    atomicMax(&workgroup_score, item);
+
+    workgroupBarrier();
+
+    if local_index == 0 {
+        atomicMax(&feature_matches[global_id.x], workgroup_score);
     }
 }

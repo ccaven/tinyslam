@@ -31,8 +31,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let color = textureSample(
         texture,
         texture_sampler,
-        input.texcoord
+        input.texcoord //+ vec2f(0.5, 0.5) / vec2f(textureDimensions(texture))
     );
+
+    
     
     let rgba_coefs = vec4f(0.229, 0.587, 0.114, 0.0);
     let gray = dot(color, rgba_coefs);

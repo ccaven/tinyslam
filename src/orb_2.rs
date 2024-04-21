@@ -18,7 +18,8 @@ use tiny_wgpu::{
 
 pub struct OrbConfig {
     pub image_size: wgpu::Extent3d,
-    pub max_features: u32
+    pub max_features: u32,
+    pub max_matches: u32
 }
 
 pub struct OrbParams {
@@ -76,25 +77,31 @@ impl OrbProgram<'_> {
             }
         );
 
+        let half_size = wgpu::Extent3d { 
+            width: config.image_size.width / 2, 
+            height: config.image_size.height / 2, 
+            depth_or_array_layers: 1
+        };
+
         program.add_texture(
             "grayscale_image",
             TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             wgpu::TextureFormat::R16Float,
-            config.image_size
+            half_size
         );
 
         program.add_texture(
             "gaussian_blur_x",
             TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             wgpu::TextureFormat::R16Float,
-            config.image_size
+            half_size
         );
 
         program.add_texture(
             "gaussian_blur",
             TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             wgpu::TextureFormat::R16Float,
-            config.image_size
+            half_size
         );
 
         program.add_buffer(
@@ -124,13 +131,7 @@ impl OrbProgram<'_> {
         program.add_buffer(
             "feature_matches",
             BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            (config.max_features * 8) as u64
-        );
-
-        program.add_buffer(
-            "feature_matches_counter", 
-            BufferUsages::STORAGE | BufferUsages::COPY_DST, 
-            4
+            (config.max_features * 4) as u64
         );
 
         program.add_buffer(
@@ -240,8 +241,7 @@ impl OrbProgram<'_> {
                 BindGroupItem::StorageBuffer { label: "previous_descriptors", min_binding_size: 8 * 4, read_only: true },
                 BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
                 BindGroupItem::StorageBuffer { label: "previous_corners_counter", min_binding_size: 4, read_only: true },
-                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 8, read_only: false },
-                BindGroupItem::StorageBuffer { label: "feature_matches_counter", min_binding_size: 4, read_only: false },
+                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 8, read_only: false }
             ]);
             
             program.add_compute_pipelines("feature_matching", &["feature_matching"], &["feature_matching"], &[]);
@@ -254,8 +254,7 @@ impl OrbProgram<'_> {
                 BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
                 BindGroupItem::StorageBuffer { label: "previous_corners", min_binding_size: 8, read_only: true },
                 BindGroupItem::StorageBuffer { label: "previous_corners_counter", min_binding_size: 4, read_only: true },
-                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 8, read_only: true },
-                BindGroupItem::StorageBuffer { label: "feature_matches_counter", min_binding_size: 4, read_only: true },
+                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 8, read_only: true }
             ]);
 
             program.add_compute_pipelines("matches_visualization", &["matches_visualization"], &["matches_visualization"], &[]);
@@ -274,7 +273,6 @@ impl OrbProgram<'_> {
 
         encoder.clear_buffer(&self.program.buffers["latest_corners_counter"], 0, None);
         encoder.clear_buffer(&self.program.buffers["feature_matches"], 0, None);
-        encoder.clear_buffer(&self.program.buffers["feature_matches_counter"], 0, None);
 
         // Grayscale image
         {
@@ -352,8 +350,8 @@ impl OrbProgram<'_> {
             cpass.set_pipeline(&self.program.compute_pipelines["corner_detector"]);
             cpass.set_bind_group(0, &self.program.bind_groups["corner_detector"], &[]);
             cpass.dispatch_workgroups(
-                (self.config.image_size.width + 7) / 8,
-                (self.config.image_size.height + 7) / 8,
+                (self.config.image_size.width / 2 + 7) / 8,
+                (self.config.image_size.height / 2 + 7) / 8,
                 1
             );
         }
@@ -418,6 +416,8 @@ impl OrbProgram<'_> {
         }
 
         // Feature matching
+        // We want the _best_ match for each feature
+        // 
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -427,8 +427,8 @@ impl OrbProgram<'_> {
             cpass.set_pipeline(&self.program.compute_pipelines["feature_matching"]);
             cpass.set_bind_group(0, &self.program.bind_groups["feature_matching"], &[]);
             cpass.dispatch_workgroups(
-                (self.config.max_features + 7) / 8,
-                (self.config.max_features + 7) / 8,
+                self.config.max_features,
+                (self.config.max_features + 63) / 64,
                 1
             );
         }
