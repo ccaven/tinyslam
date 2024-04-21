@@ -21,6 +21,10 @@ pub struct OrbConfig {
     pub max_features: u32
 }
 
+pub struct OrbParams {
+    pub record_keyframe: bool
+}
+
 pub struct OrbProgram<'a> {
     pub config: OrbConfig,
     pub program: tiny_wgpu::ComputeProgram<'a>
@@ -38,7 +42,8 @@ impl OrbProgram<'_> {
         program.add_module("feature_matching", wgpu::include_wgsl!("shaders/feature_matching.wgsl"));
         
         program.add_module("corner_visualization", wgpu::include_wgsl!("shaders/corner_visualization.wgsl"));
-        
+        program.add_module("matches_visualization", wgpu::include_wgsl!("shaders/matches_visualization.wgsl"));
+
         program.add_texture(
             "visualization",
             TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC | TextureUsages::COPY_DST,
@@ -94,19 +99,19 @@ impl OrbProgram<'_> {
 
         program.add_buffer(
             "latest_corners",
-            BufferUsages::STORAGE,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             (config.max_features * 8) as u64
         );
 
         program.add_buffer(
             "latest_corners_counter",
-            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             4
         );
 
         program.add_buffer(
             "previous_corners",
-            BufferUsages::STORAGE,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
             (config.max_features * 8) as u64
         );
 
@@ -118,8 +123,8 @@ impl OrbProgram<'_> {
 
         program.add_buffer(
             "feature_matches",
-            BufferUsages::STORAGE,
-            (config.max_features * 4) as u64
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            (config.max_features * 8) as u64
         );
 
         program.add_buffer(
@@ -235,9 +240,25 @@ impl OrbProgram<'_> {
                 BindGroupItem::StorageBuffer { label: "previous_descriptors", min_binding_size: 8 * 4, read_only: true },
                 BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
                 BindGroupItem::StorageBuffer { label: "previous_corners_counter", min_binding_size: 4, read_only: true },
-                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 4, read_only: false },
+                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 8, read_only: false },
                 BindGroupItem::StorageBuffer { label: "feature_matches_counter", min_binding_size: 4, read_only: false },
             ]);
+            
+            program.add_compute_pipelines("feature_matching", &["feature_matching"], &["feature_matching"], &[]);
+        }
+
+        {
+            program.add_bind_group("matches_visualization", &[
+                BindGroupItem::StorageTexture { label: "visualization", access: wgpu::StorageTextureAccess::WriteOnly },
+                BindGroupItem::StorageBuffer { label: "latest_corners", min_binding_size: 8, read_only: true },
+                BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
+                BindGroupItem::StorageBuffer { label: "previous_corners", min_binding_size: 8, read_only: true },
+                BindGroupItem::StorageBuffer { label: "previous_corners_counter", min_binding_size: 4, read_only: true },
+                BindGroupItem::StorageBuffer { label: "feature_matches", min_binding_size: 8, read_only: true },
+                BindGroupItem::StorageBuffer { label: "feature_matches_counter", min_binding_size: 4, read_only: true },
+            ]);
+
+            program.add_compute_pipelines("matches_visualization", &["matches_visualization"], &["matches_visualization"], &[]);
         }
 
         Self {
@@ -246,14 +267,16 @@ impl OrbProgram<'_> {
         }
     }
 
-    pub fn run(&self) {
+    pub fn run(&self, params: OrbParams) {
         let mut encoder = self.program.compute.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None
         });
 
-        encoder.clear_buffer(&self.program.buffers["latest_corners_counter"], 0, Some(4));
-        encoder.clear_buffer(&self.program.buffers["feature_matches_counter"], 0, Some(4));
+        encoder.clear_buffer(&self.program.buffers["latest_corners_counter"], 0, None);
+        encoder.clear_buffer(&self.program.buffers["feature_matches"], 0, None);
+        encoder.clear_buffer(&self.program.buffers["feature_matches_counter"], 0, None);
 
+        // Grayscale image
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -275,6 +298,7 @@ impl OrbProgram<'_> {
             rpass.draw(0..3, 0..1);
         }
 
+        // Gaussian blur x
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -296,6 +320,7 @@ impl OrbProgram<'_> {
             rpass.draw(0..3, 0..1);
         }
 
+        // Gaussian blur y
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -317,6 +342,7 @@ impl OrbProgram<'_> {
             rpass.draw(0..3, 0..1);
         }
 
+        // Corner detector
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -332,6 +358,7 @@ impl OrbProgram<'_> {
             );
         }
 
+        // Corner visualization
         {
             encoder.copy_texture_to_texture(
                 wgpu::ImageCopyTextureBase { 
@@ -374,6 +401,7 @@ impl OrbProgram<'_> {
             );
         }
 
+        // Feature descriptors
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -386,6 +414,63 @@ impl OrbProgram<'_> {
                 (self.config.max_features + 63) / 64,
                 1,
                 1
+            );
+        }
+
+        // Feature matching
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass.set_pipeline(&self.program.compute_pipelines["feature_matching"]);
+            cpass.set_bind_group(0, &self.program.bind_groups["feature_matching"], &[]);
+            cpass.dispatch_workgroups(
+                (self.config.max_features + 7) / 8,
+                (self.config.max_features + 7) / 8,
+                1
+            );
+        }
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None
+            });
+
+            cpass.set_pipeline(&self.program.compute_pipelines["matches_visualization"]);
+            cpass.set_bind_group(0, &self.program.bind_groups["matches_visualization"], &[]);
+            cpass.dispatch_workgroups(
+                (self.config.max_features + 63) / 64,
+                1,
+                1
+            );
+        }
+
+        if params.record_keyframe {
+            encoder.copy_buffer_to_buffer(
+                &self.program.buffers["latest_corners"], 
+                0, 
+                &self.program.buffers["previous_corners"], 
+                0, 
+                self.program.buffers["previous_corners"].size()
+            );
+
+            encoder.copy_buffer_to_buffer(
+                &self.program.buffers["latest_corners_counter"], 
+                0, 
+                &self.program.buffers["previous_corners_counter"], 
+                0, 
+                self.program.buffers["previous_corners_counter"].size()
+            );
+
+            encoder.copy_buffer_to_buffer(
+                &self.program.buffers["latest_descriptors"], 
+                0, 
+                &self.program.buffers["previous_descriptors"], 
+                0, 
+                self.program.buffers["previous_descriptors"].size()
             );
         }
 
