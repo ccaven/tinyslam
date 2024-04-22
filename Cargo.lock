@@ -558,17 +558,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
 
 [[package]]
-name = "orbslam_gpu"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "flume",
- "pollster",
- "tiny_wgpu",
- "wgpu",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -772,6 +761,17 @@ dependencies = [
 name = "tiny_wgpu"
 version = "0.1.0"
 dependencies = [
+ "wgpu",
+]
+
+[[package]]
+name = "tinyslam"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "flume",
+ "pollster",
+ "tiny_wgpu",
  "wgpu",
 ]
 
