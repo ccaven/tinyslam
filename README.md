@@ -1,6 +1,6 @@
-# orbslam_gpu
+# tinyslam
 
-This project aims to implement ORB-SLAM using `wgpu` compute shaders.
+This project aims to implement visual SLAM using `wgpu` compute shaders.
 
 Progess on compute shader items:
  - [ ] Hardware accelerated video decoding
