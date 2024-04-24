@@ -4,8 +4,6 @@ TODO:
  - Should get performance from 1.0ms to 0.5ms
 */
 
-use std::sync::Arc;
-
 use wgpu::{
     BufferUsages, TextureUsages
 };
