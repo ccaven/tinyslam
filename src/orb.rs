@@ -14,7 +14,6 @@ use tiny_wgpu::{
     Compute,
     Storage,
     ComputeProgram,
-    ComputeProgramExt,
     BindGroupItem
 };
 
