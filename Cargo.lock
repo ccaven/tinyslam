@@ -761,6 +761,7 @@ dependencies = [
 name = "tiny_wgpu"
 version = "0.1.0"
 dependencies = [
+ "flume",
  "wgpu",
 ]
 
