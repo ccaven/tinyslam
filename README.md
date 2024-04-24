@@ -1,21 +1,19 @@
-# tiny_slam
+**tiny_slam** is a visual SLAM (Simultaneous Localization and Mapping) library. It heavily relies on general-purpose GPU computing via the **tiny_wgpu** library (primarily using the Vulkan backend).
 
-`**tiny_slam**` is a visual SLAM (Simultaneous Localization and Mapping) library. It heavily relies on general-purpose GPU computing via the `**wgpu**` library (primarily using the Vulkan backend).
-
-This library is a work in progess.
+**tiny_slam** is a work in progess.
 
 ## Motivation
 
-`**tiny_slam**` aims to:
+**tiny_slam** aims to:
 
 1. Make visual SLAM accessible to developers, independent researchers, and small companies
 2. Decrease the cost of visual SLAM
-3. Bring edge computing to cross-platform devices (via `**wgpu**`)
+3. Bring edge computing to cross-platform devices (via **wgpu**)
 4. Increase innovation in drone / autonomous agent applications that are unlocked given precise localization
 
 ## Constraints
 
-`**tiny_slam**` imposes these constraints on itself:
+**tiny_slam** imposes these constraints on itself:
 
 1. Minimize number of dependencies
 2. Rely on computer shaders whenever possible
@@ -32,7 +30,7 @@ This library is a work in progess.
     - [x]  Use MediaFoundation API on Windows, video4linux on Linux, and AVFoundation on MacOS
     - [x]  Software decode Motion JPEG (MJPEG) stream from webcam
     - [ ]  Utilize hardware decoding with higher framerate cameras
-- [x]  Build helper library (`**tiny_wgpu**`) to increase compute shader workflow
+- [x]  Build helper library (**tiny_wgpu**) to increase compute shader workflow
     - [x]  Increase default limits for push constants and number of bindings
     - [x]  Enable read/write storage textures
     - [x]  Support render pipelines
