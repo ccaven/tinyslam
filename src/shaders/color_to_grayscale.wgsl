@@ -31,7 +31,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let color = textureSample(
         texture,
         texture_sampler,
-        input.texcoord //+ vec2f(0.5, 0.5) / vec2f(textureDimensions(texture))
+        input.texcoord + vec2f(0.5, 0.5) / vec2f(textureDimensions(texture))
     );
 
     
