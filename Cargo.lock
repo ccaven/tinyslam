@@ -785,9 +785,9 @@ dependencies = [
 
 [[package]]
 name = "tiny_wgpu"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "224cc7cd6820bcf8a36a03ee6190c4db5963030c8759b67ef5051e477779739e"
+checksum = "4f529682beb0c407d21ed98d23945e3992e6ec2c7c4d27f57502e7e706eae2a8"
 dependencies = [
  "flume",
  "wgpu",

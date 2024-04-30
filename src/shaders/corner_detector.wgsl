@@ -1,11 +1,23 @@
+struct Feature {
+    x: u32,
+    y: u32,
+    octave: u32,
+    response: u32
+}
+
 @group(0) @binding(0)
 var texture: texture_2d<f32>;
 
 @group(0) @binding(1)
-var<storage, read_write> latest_corners: array<vec2u>;
+var linear_sampler: sampler;
 
-@group(0) @binding(2)
+@group(1) @binding(0)
+var<storage, read_write> latest_corners: array<Feature>;
+
+@group(1) @binding(1)
 var<storage, read_write> latest_corners_counter: atomic<u32>;
+
+var<push_constant> octave: u32;
 
 var<workgroup> counter: atomic<u32>;
 var<workgroup> workgroup_global_index: u32;
@@ -122,7 +134,14 @@ fn corner_detector(
     if is_corner {
         let global_index = workgroup_global_index + workgroup_index;
 
-        latest_corners[global_index] = global_id.xy;
+        var feature: Feature;
+
+        feature.x = global_id.x;
+        feature.y = global_id.y;
+        feature.octave = octave;
+        feature.response = 0u;
+
+        latest_corners[global_index] = feature;
     }
 
 }

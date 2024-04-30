@@ -5,7 +5,7 @@ TODO:
 */
 
 use wgpu::{
-    BufferUsages, TextureUsages
+    BufferUsages, ShaderStages, TextureUsages
 };
 
 use tiny_wgpu::{
@@ -23,24 +23,25 @@ pub struct OrbParams {
     pub record_keyframe: bool
 }
 
-pub struct OrbProgram<'a> {
+pub struct OrbProgram {
     pub config: OrbConfig,
     pub compute: Compute,
-    pub storage: Storage<'a>
+    pub storage: Storage
 }
 
-impl<'a> ComputeProgram<'a> for OrbProgram<'a> {
+impl ComputeProgram for OrbProgram {
     fn compute(&self) -> &Compute {
         &self.compute
     }
-    fn storage(&self) -> &Storage<'a> {
+    fn storage(&self) -> &Storage {
         &self.storage
     }
-    fn storage_mut(&mut self) -> &mut Storage<'a> {
+    fn storage_mut(&mut self) -> &mut Storage {
         &mut self.storage
     }
 }
 
+// Define the labels we are using for the image hierarchy
 seq_macro::seq!(N in 0..10 {
     const MAX_HIERARCHY_DEPTH: usize = 10;
     const IMAGE_HIERARCHY_NAMES: [&str; MAX_HIERARCHY_DEPTH] = [
@@ -58,12 +59,43 @@ seq_macro::seq!(N in 0..10 {
             const_format::formatcp!("image_hierarchy_blur_{}", N as u32),
         )*
     ];
+    const IMAGE_HIERARCHY_BLUR_TMP_BIND_GROUP_NAMES: [&str; MAX_HIERARCHY_DEPTH] = [
+        #(
+            const_format::formatcp!("image_hierarchy_blur_tmp_bind_group_{}", N as u32),
+        )*
+    ];
+    const IMAGE_HIERARCHY_BLUR_BIND_GROUP_NAMES: [&str; MAX_HIERARCHY_DEPTH] = [
+        #(
+            const_format::formatcp!("image_hierarchy_blur_bind_group_{}", N as u32),
+        )*
+    ];
+    const IMAGE_HIERARCHY_BLUR_X_KERNEL_NAMES: [&str; MAX_HIERARCHY_DEPTH] = [
+        #(
+            const_format::formatcp!("image_hierarchy_blur_x_kernel_{}", N as u32),
+        )*
+    ];
+    const IMAGE_HIERARCHY_BLUR_Y_KERNEL_NAMES: [&str; MAX_HIERARCHY_DEPTH] = [
+        #(
+            const_format::formatcp!("image_hierarchy_blur_y_kernel_{}", N as u32),
+        )*
+    ];
+    const IMAGE_HIERARCHY_BLIT_BIND_GROUP_NAMES: [&str; MAX_HIERARCHY_DEPTH] = [
+        #(
+            const_format::formatcp!("image_hierarchy_blit_bind_group_{}", N as u32),
+        )*
+    ];
+    const IMAGE_HIERARCHY_BLIT_KERNEL_NAMES: [&str; MAX_HIERARCHY_DEPTH] = [
+        #(
+            const_format::formatcp!("image_hierarchy_blit_kernel_{}", N as u32),
+        )*
+    ];
 });
 
-impl OrbProgram<'_> {
+impl OrbProgram {
     pub fn init(&mut self) {
 
-        self.add_module("color_to_grayscale", wgpu::include_wgsl!("shaders/color_to_grayscale.wgsl"));
+        self.add_module("color_to_grayscale", wgpu::include_wgsl!("shaders/grayscale.wgsl"));
+        self.add_module("blit", wgpu::include_wgsl!("shaders/blit.wgsl"));
         self.add_module("gaussian_blur_x", wgpu::include_wgsl!("shaders/gaussian_blur_x.wgsl"));
         self.add_module("gaussian_blur_y", wgpu::include_wgsl!("shaders/gaussian_blur_y.wgsl"));
         self.add_module("corner_detector", wgpu::include_wgsl!("shaders/corner_detector.wgsl"));
@@ -77,7 +109,7 @@ impl OrbProgram<'_> {
         );
         
         self.add_sampler(
-            "input_image_sampler",
+            "linear_sampler",
             wgpu::SamplerDescriptor {
                 label: None,
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -94,14 +126,36 @@ impl OrbProgram<'_> {
             }
         );
 
+        self.add_texture(
+            "grayscale",
+            TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+            wgpu::TextureFormat::R16Float,
+            self.config.image_size
+        );
+
+        self.add_bind_group("color_to_grayscale", &[
+            BindGroupItem::Sampler { label: "linear_sampler" },
+            BindGroupItem::Texture { label: "input_image" }
+        ]);
+
+        self.add_render_pipelines(
+            "color_to_grayscale", 
+            &["color_to_grayscale"], 
+            &[RenderKernel { label: "color_to_grayscale", vertex: "vs_main", fragment: "fs_main" }],
+            &[],
+            &[Some(wgpu::TextureFormat::R16Float.into())], 
+            &[],
+            None,
+            None
+        );
+
         let mut cur_width = self.config.image_size.width;
         let mut cur_height = self.config.image_size.height;
 
-        
-
         for i in 0..(self.config.hierarchy_depth as usize) {
+            // Add textures            
             self.add_texture(
-                &IMAGE_HIERARCHY_NAMES[i as usize],
+                &IMAGE_HIERARCHY_NAMES[i],
                 TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
                 wgpu::TextureFormat::R16Float,
                 wgpu::Extent3d {
@@ -110,6 +164,14 @@ impl OrbProgram<'_> {
                     depth_or_array_layers: 1
                 }
             );
+
+            if i > 0 {
+                // Add pipeline to blit from i - 1 to i
+                self.add_bind_group(&IMAGE_HIERARCHY_BLIT_BIND_GROUP_NAMES[i], &[
+                    BindGroupItem::Sampler { label: "linear_sampler" },
+                    BindGroupItem::Texture { label: &IMAGE_HIERARCHY_NAMES[i - 1] }
+                ]);
+            }
 
             self.add_texture(
                 &IMAGE_HIERARCHY_BLUR_TMP_NAMES[i],
@@ -122,6 +184,22 @@ impl OrbProgram<'_> {
                 }
             );
 
+            self.add_bind_group(&IMAGE_HIERARCHY_BLUR_TMP_BIND_GROUP_NAMES[i], &[
+                BindGroupItem::Sampler { label: "linear_sampler" },
+                BindGroupItem::Texture { label: &IMAGE_HIERARCHY_NAMES[i] }
+            ]);
+
+            self.add_render_pipelines(
+                "gaussian_blur_x", 
+                &[&IMAGE_HIERARCHY_BLUR_TMP_BIND_GROUP_NAMES[i]], 
+                &[RenderKernel { label: &IMAGE_HIERARCHY_BLUR_X_KERNEL_NAMES[i], vertex: "vs_main", fragment: "fs_main" }], 
+                &[], 
+                &[Some(wgpu::TextureFormat::R16Float.into())], 
+                &[], 
+                None,
+                None
+            );
+
             self.add_texture(
                 &IMAGE_HIERARCHY_BLUR_NAMES[i],
                 TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
@@ -132,6 +210,22 @@ impl OrbProgram<'_> {
                     depth_or_array_layers: 1
                 }
             );
+            
+            self.add_bind_group(&IMAGE_HIERARCHY_BLUR_BIND_GROUP_NAMES[i], &[
+                BindGroupItem::Sampler { label: "linear_sampler" },
+                BindGroupItem::Texture { label: &IMAGE_HIERARCHY_BLUR_TMP_NAMES[i] }
+            ]);
+
+            self.add_render_pipelines(
+                "gaussian_blur_y", 
+                &[&IMAGE_HIERARCHY_BLUR_BIND_GROUP_NAMES[i]], 
+                &[RenderKernel { label: &IMAGE_HIERARCHY_BLUR_Y_KERNEL_NAMES[i], vertex: "vs_main", fragment: "fs_main" }], 
+                &[], 
+                &[Some(wgpu::TextureFormat::R16Float.into())], 
+                &[], 
+                None,
+                None
+            );
 
             cur_width /= 2;
             cur_height /= 2;
@@ -140,7 +234,8 @@ impl OrbProgram<'_> {
         self.add_buffer(
             "latest_corners",
             BufferUsages::VERTEX | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            (self.config.max_features * 8) as u64
+            // Each feature is 4 u32
+            (self.config.max_features * 4 * 4) as u64
         );
 
         self.add_buffer(
@@ -151,70 +246,46 @@ impl OrbProgram<'_> {
 
         self.add_staging_buffer("latest_corners_counter");
 
+        self.add_bind_group("corner_detector", &[
+            BindGroupItem::Texture { label: "grayscale_image" },
+            BindGroupItem::StorageBuffer { label: "latest_corners", min_binding_size: 8, read_only: false },
+            BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: false }
+        ]);
+
+        self.add_compute_pipelines(
+            "corner_detector", 
+            &[&IMAGE_HIERARCHY_BLIT_BIND_GROUP_NAMES[1], "corner_detector"], 
+            &[ComputeKernel { label: "corner_detector", entry_point: "corner_detector" }],
+            &[wgpu::PushConstantRange { range: 0..4, stages: ShaderStages::COMPUTE }],
+            None
+        );
+
         self.add_buffer(
             "latest_descriptors",
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            // Each descriptor is 8 u32
             (self.config.max_features * 8 * 4) as u64
         );
 
-        // Stage 1: Color to grayscale
-        {
-            self.add_bind_group("color_to_grayscale", &[
-                BindGroupItem::Sampler { label: "input_image_sampler" },
-                BindGroupItem::Texture { label: "input_image" }
-            ]);
+        self.add_bind_group("feature_descriptors", &[
+            BindGroupItem::Texture { label: "gaussian_blur" },
+            BindGroupItem::StorageBuffer { label: "latest_corners", min_binding_size: 8, read_only: true },
+            BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
+            BindGroupItem::StorageBuffer { label: "latest_descriptors", min_binding_size: 8 * 4, read_only: false },
+            BindGroupItem::Texture { label: "grayscale_image" }
+        ]);
 
-            self.add_render_pipelines(
-                "color_to_grayscale", 
-                &["color_to_grayscale"], 
-                &[RenderKernel { label: "color_to_grayscale", vertex: "vs_main", fragment: "fs_main" }],
-                &[],
-                &[Some(wgpu::TextureFormat::R16Float.into())], 
-                &[],
-                None,
-                None
-            );
-        }
-
-        // Stage 4: Corner detection
-        {
-            self.add_bind_group("corner_detector", &[
-                BindGroupItem::Texture { label: "grayscale_image" },
-                BindGroupItem::StorageBuffer { label: "latest_corners", min_binding_size: 8, read_only: false },
-                BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: false }
-            ]);
-
-            self.add_compute_pipelines(
-                "corner_detector", 
-                &["corner_detector"], 
-                &[ComputeKernel { label: "corner_detector", entry_point: "corner_detector" }], 
-                &[],
-                None
-            );
-        }
-
-
-        // Stage 5: Feature descriptors
-        {
-            self.add_bind_group("feature_descriptors", &[
-                BindGroupItem::Texture { label: "gaussian_blur" },
-                BindGroupItem::StorageBuffer { label: "latest_corners", min_binding_size: 8, read_only: true },
-                BindGroupItem::StorageBuffer { label: "latest_corners_counter", min_binding_size: 4, read_only: true },
-                BindGroupItem::StorageBuffer { label: "latest_descriptors", min_binding_size: 8 * 4, read_only: false },
-                BindGroupItem::Texture { label: "grayscale_image" }
-            ]);
-
-            self.add_compute_pipelines(
-                "feature_descriptors", 
-                &["feature_descriptors"], 
-                &[ComputeKernel { label: "feature_descriptors", entry_point: "feature_descriptors" }], 
-                &[],
-                None
-            );
-        }
+        self.add_compute_pipelines(
+            "feature_descriptors", 
+            &["feature_descriptors"], 
+            &[ComputeKernel { label: "feature_descriptors", entry_point: "feature_descriptors" }], 
+            &[],
+            None
+        );
+        
     }
 
-    pub fn run(&self, params: OrbParams) {
+    pub fn run(&self) {
         let mut encoder = self.compute().device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None
         });
@@ -224,7 +295,6 @@ impl OrbProgram<'_> {
         // Grayscale image
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
                 color_attachments: &[
                     Some(wgpu::RenderPassColorAttachment { 
                         view: &self.storage().texture_views["grayscale_image"], 
@@ -243,20 +313,96 @@ impl OrbProgram<'_> {
             rpass.draw(0..3, 0..1);
         }
 
-        // Corner detector
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None
-            });
+        // Compute image hierarchy
+        for i in 0..(self.config.hierarchy_depth as usize) {
 
-            cpass.set_pipeline(&self.storage().compute_pipelines["corner_detector"]);
-            cpass.set_bind_group(0, &self.storage().bind_groups["corner_detector"], &[]);
-            cpass.dispatch_workgroups(
-                (self.config.image_size.width / 2 + 7) / 8,
-                (self.config.image_size.height / 2 + 7) / 8,
-                1
-            );
+            if i > 0 {
+
+                // Downsample from previous layer
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { 
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment { 
+                            view: &self.storage().texture_views[&IMAGE_HIERARCHY_NAMES[i - 1]], 
+                            resolve_target: None, 
+                            ops: wgpu::Operations { 
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), 
+                                store: wgpu::StoreOp::Store
+                            } 
+                        })], 
+                        ..Default::default()
+                    });
+
+                    rpass.set_pipeline(&self.storage().render_pipelines[&IMAGE_HIERARCHY_BLIT_KERNEL_NAMES[i]]);
+                    rpass.set_bind_group(0, &self.storage().bind_groups[&IMAGE_HIERARCHY_BLIT_BIND_GROUP_NAMES[i]], &[]);
+                    rpass.draw(0..3, 0..1);
+                }
+
+            }
+
+            // Compute gaussian blur
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { 
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { 
+                        view: &self.storage().texture_views[&IMAGE_HIERARCHY_BLUR_TMP_NAMES[i]], 
+                        resolve_target: None, 
+                        ops: wgpu::Operations { 
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), 
+                            store: wgpu::StoreOp::Store
+                        } 
+                    })], 
+                    ..Default::default()
+                });
+
+                rpass.set_pipeline(&self.storage().render_pipelines[&IMAGE_HIERARCHY_BLUR_X_KERNEL_NAMES[i]]);
+                rpass.set_bind_group(0, &self.storage().bind_groups[&IMAGE_HIERARCHY_BLUR_TMP_BIND_GROUP_NAMES[i]], &[]);
+                rpass.draw(0..3, 0..1);
+            }
+
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor { 
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { 
+                        view: &self.storage().texture_views[&IMAGE_HIERARCHY_BLUR_NAMES[i - 1]], 
+                        resolve_target: None, 
+                        ops: wgpu::Operations { 
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), 
+                            store: wgpu::StoreOp::Store
+                        } 
+                    })], 
+                    ..Default::default()
+                });
+
+                rpass.set_pipeline(&self.storage().render_pipelines[&IMAGE_HIERARCHY_BLUR_Y_KERNEL_NAMES[i]]);
+                rpass.set_bind_group(0, &self.storage().bind_groups[&IMAGE_HIERARCHY_BLUR_BIND_GROUP_NAMES[i]], &[]);
+                rpass.draw(0..3, 0..1);
+            }
+
+            // Detect corners on this layer
+            {
+                let mut cpass = encoder.begin_compute_pass(&Default::default());
+
+                cpass.set_pipeline(&self.storage().compute_pipelines["corner_detector"]);
+                
+                cpass.set_push_constants(0, bytemuck::cast_slice(&[ i as u32 ]));
+                
+                cpass.set_bind_group(0, &self.storage().bind_groups[&IMAGE_HIERARCHY_BLIT_BIND_GROUP_NAMES[i]], &[]);
+
+                cpass.set_bind_group(1, &self.storage().bind_groups["corner_detector"], &[]);
+                
+                let image_width = self.storage().textures[&IMAGE_HIERARCHY_NAMES[i]].width();
+                let image_height = self.storage().textures[&IMAGE_HIERARCHY_NAMES[i]].height();
+
+                cpass.dispatch_workgroups(
+                    (image_width + 7) / 8,
+                    (image_height + 7) / 8,
+                    1
+                );
+            }
+
+            // TODO: Compute descriptors on this layer
+            {
+                
+            }
+
         }
 
         // Wait for device to finish
@@ -278,163 +424,6 @@ impl OrbProgram<'_> {
         };
 
         println!("Corner count: {}", corner_count);
-
-        let mut encoder = self.compute().device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: None
-        });       
-
-        // Gaussian blur x
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment { 
-                        view: &self.storage().texture_views["gaussian_blur_x"], 
-                        resolve_target: None, 
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store
-                        },
-                    })
-                ],
-                ..Default::default()
-            });
-
-            rpass.set_pipeline(&self.storage().render_pipelines["gaussian_blur_x"]);
-            rpass.set_bind_group(0, &self.storage().bind_groups["gaussian_blur_x"], &[]);
-            rpass.draw(0..3, 0..1);
-        }
-
-        // Gaussian blur y
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment { 
-                        view: &self.storage().texture_views["gaussian_blur"], 
-                        resolve_target: None, 
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store
-                        },
-                    })
-                ],
-                ..Default::default()
-            });
-
-            rpass.set_pipeline(&self.storage().render_pipelines["gaussian_blur_y"]);
-            rpass.set_bind_group(0, &self.storage().bind_groups["gaussian_blur_y"], &[]);
-            rpass.draw(0..3, 0..1);
-        }
-
-        // Corner visualization
-        // {
-        //     encoder.copy_texture_to_texture(
-        //         wgpu::ImageCopyTextureBase { 
-        //             texture: &self.storage().textures["input_image"], 
-        //             mip_level: 0, 
-        //             origin: wgpu::Origin3d::ZERO, 
-        //             aspect: wgpu::TextureAspect::All
-        //         },
-        //         wgpu::ImageCopyTextureBase { 
-        //             texture: &self.storage().textures["visualization"], 
-        //             mip_level: 0, 
-        //             origin: wgpu::Origin3d::ZERO, 
-        //             aspect: wgpu::TextureAspect::All
-        //         },
-        //         self.config.image_size.clone()
-        //     );
-
-        //     let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        //         label: None,
-        //         timestamp_writes: None
-        //     });
-
-        //     cpass.set_pipeline(&self.storage().compute_pipelines["corner_visualization"]);
-        //     cpass.set_bind_group(0, &self.storage().bind_groups["corner_visualization"], &[]);
-        //     cpass.dispatch_workgroups(
-        //         (self.config.max_features + 63) / 64,
-        //         1,
-        //         1
-        //     );
-        // }
-
-        // Feature descriptors
-        // {
-        //     let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        //         label: None,
-        //         timestamp_writes: None
-        //     });
-
-        //     cpass.set_pipeline(&self.storage().compute_pipelines["feature_descriptors"]);
-        //     cpass.set_bind_group(0, &self.storage().bind_groups["feature_descriptors"], &[]);
-        //     cpass.dispatch_workgroups(
-        //         (self.config.max_features + 63) / 64,
-        //         1,
-        //         1
-        //     );
-        // }
-
-        // Feature matching
-        // We want the _best_ match for each feature
-        // 
-        {
-            // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            //     label: None,
-            //     timestamp_writes: None
-            // });
-
-            // cpass.set_pipeline(&self.storage().compute_pipelines["feature_matching"]);
-            // cpass.set_bind_group(0, &self.storage().bind_groups["feature_matching"], &[]);
-            // cpass.dispatch_workgroups(
-            //     self.config.max_features,
-            //     (self.config.max_features + 63) / 64,
-            //     1
-            // );
-        }
-
-        {
-            // let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            //     label: None,
-            //     timestamp_writes: None
-            // });
-
-            // cpass.set_pipeline(&self.storage().compute_pipelines["matches_visualization"]);
-            // cpass.set_bind_group(0, &self.storage().bind_groups["matches_visualization"], &[]);
-            // cpass.dispatch_workgroups(
-            //     (self.config.max_features + 63) / 64,
-            //     1,
-            //     1
-            // );
-        }
-
-        if params.record_keyframe {
-            encoder.copy_buffer_to_buffer(
-                &self.storage().buffers["latest_corners"], 
-                0, 
-                &self.storage().buffers["previous_corners"], 
-                0, 
-                self.storage().buffers["previous_corners"].size()
-            );
-
-            encoder.copy_buffer_to_buffer(
-                &self.storage().buffers["latest_corners_counter"], 
-                0, 
-                &self.storage().buffers["previous_corners_counter"], 
-                0, 
-                self.storage().buffers["previous_corners_counter"].size()
-            );
-
-            encoder.copy_buffer_to_buffer(
-                &self.storage().buffers["latest_descriptors"], 
-                0, 
-                &self.storage().buffers["previous_descriptors"], 
-                0, 
-                self.storage().buffers["previous_descriptors"].size()
-            );
-        }
-
-        self.compute().queue.submit(Some(encoder.finish()));
     }
 
     pub fn write_input_image(&self, bytes: &[u8]) {
