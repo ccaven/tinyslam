@@ -1,10 +1,10 @@
 // From: https://github.com/gfx-rs/wgpu/blob/trunk/examples/src/mipmap/blit.wgsl
 
 @group(0) @binding(0)
-var r_color: texture_2d<f32>;
+var r_sampler: sampler;
 
 @group(0) @binding(1)
-var r_sampler: sampler;
+var r_color: texture_2d<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,

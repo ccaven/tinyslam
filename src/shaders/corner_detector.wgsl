@@ -1,15 +1,15 @@
 struct Feature {
     x: u32,
     y: u32,
-    octave: u32,
-    response: u32
+    angle: f32,
+    octave: u32
 }
 
 @group(0) @binding(0)
-var texture: texture_2d<f32>;
+var linear_sampler: sampler;
 
 @group(0) @binding(1)
-var linear_sampler: sampler;
+var texture: texture_2d<f32>;
 
 @group(1) @binding(0)
 var<storage, read_write> latest_corners: array<Feature>;
@@ -62,6 +62,7 @@ fn corner_detector(
 
     var is_corner = false;
     var workgroup_index: u32;
+    var angle: f32;
 
     if (all(global_id.xy > vec2u(16, 16)) && all(global_id.xy < textureDimensions(texture))) {
         let center_value = textureLoad(texture, global_id.xy, 0).x;
@@ -93,12 +94,17 @@ fn corner_detector(
             for (var i = 0u; i < 16u; i ++) {
                 let corner_value = textureLoad(texture, id_i32 + CORNERS_16[i], 0).x;
                 let diff = corner_value - center_value;
+                
+                centroid += corner_value * vec2f(CORNERS_16[i]);
+
                 if diff > threshold {
                     is_over |= 1u << i;
                 } else if diff < -threshold {
                     is_under |= 1u << i;
                 }
             }
+
+            angle = atan2(centroid.y, centroid.x);
 
             // Detect streak of 12 bits
             let o_6 = is_over & rotate_bits_16(is_over, 6u);
@@ -138,8 +144,8 @@ fn corner_detector(
 
         feature.x = global_id.x;
         feature.y = global_id.y;
+        feature.angle = angle;
         feature.octave = octave;
-        feature.response = 0u;
 
         latest_corners[global_index] = feature;
     }
