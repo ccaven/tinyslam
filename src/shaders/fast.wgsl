@@ -12,10 +12,10 @@ var linear_sampler: sampler;
 var texture: texture_2d<f32>;
 
 @group(1) @binding(0)
-var<storage, read_write> latest_corners: array<Feature>;
+var<storage, read_write> corners: array<Feature>;
 
 @group(1) @binding(1)
-var<storage, read_write> latest_corners_counter: atomic<u32>;
+var<storage, read_write> global_counter: atomic<u32>;
 
 var<push_constant> octave: u32;
 
@@ -53,6 +53,12 @@ fn rotate_bits_16(num: u32, count: u32) -> u32 {
     return (num >> count) | (num << (16u - count) & bitmask_16);
 }
 
+fn detect_streak_16(x: u32) -> u32 {
+    let o_6 = x & rotate_bits_16(x, 6u);
+    let o_3 = o_6 & rotate_bits_16(o_6, 3u);
+    return o_3 & rotate_bits_16(o_3, 2u) & rotate_bits_16(o_3, 1u);
+}
+
 @compute
 @workgroup_size(8, 8, 1)
 fn corner_detector(
@@ -63,11 +69,14 @@ fn corner_detector(
     var is_corner = false;
     var workgroup_index: u32;
     var angle: f32;
+    var descriptor: array<u32, 8>;
 
+    // Any valid corner must be inside a certain distance from the edges
+    // to properly calculate its BRIEF descriptor
     if (all(global_id.xy > vec2u(16, 16)) && all(global_id.xy < textureDimensions(texture))) {
         let center_value = textureLoad(texture, global_id.xy, 0).x;
 
-        let threshold = 0.25;
+        let threshold = 0.20;
 
         let id_i32 = vec2i(global_id.xy);
 
@@ -107,13 +116,8 @@ fn corner_detector(
             angle = atan2(centroid.y, centroid.x);
 
             // Detect streak of 12 bits
-            let o_6 = is_over & rotate_bits_16(is_over, 6u);
-            let o_3 = o_6 & rotate_bits_16(o_6, 3u);
-            let streak_a = o_3 & rotate_bits_16(o_3, 2u) & rotate_bits_16(o_3, 1u);
-            
-            let u_6 = is_under & rotate_bits_16(is_under, 6u);
-            let u_3 = u_6 & rotate_bits_16(u_6, 3u);
-            let streak_b = u_3 & rotate_bits_16(u_3, 1u) & rotate_bits_16(u_3, 2u);
+            let streak_a = detect_streak_16(is_over);
+            let streak_b = detect_streak_16(is_under);
 
             let streak = (streak_a | streak_b) > 0u;
 
@@ -127,16 +131,19 @@ fn corner_detector(
 
     workgroupBarrier();
 
+    // No features? :(
     if counter == 0 {
         return;
     }
 
+    // Stand in line to get our workgroup index
     if local_index == 0 {
-        workgroup_global_index = atomicAdd(&latest_corners_counter, counter);
+        workgroup_global_index = atomicAdd(&global_counter, counter);
     }
 
     workgroupBarrier();
 
+    // Add corner
     if is_corner {
         let global_index = workgroup_global_index + workgroup_index;
 
@@ -147,7 +154,7 @@ fn corner_detector(
         feature.angle = angle;
         feature.octave = octave;
 
-        latest_corners[global_index] = feature;
+        corners[global_index] = feature;
     }
 
 }

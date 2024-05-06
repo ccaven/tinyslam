@@ -1,19 +1,84 @@
+struct Feature {
+    x: u32,
+    y: u32,
+    angle: f32,
+    octave: u32
+}
+
 @group(0) @binding(0)
-var texture: texture_2d<f32>;
+var blur_hierarchy: binding_array<texture_2d<f32>>;
 
-@group(0) @binding(1)
-var<storage, read> corners: array<vec2u>;
+@group(1) @binding(0)
+var<storage, read> corners: array<Feature>;
 
-@group(0) @binding(2)
-var<storage, read> corners_counter: u32;
+@group(1) @binding(1)
+var<storage, read> counter: u32;
 
-@group(0) @binding(3)
+@group(1) @binding(2)
 var<storage, read_write> descriptors: array<array<u32, 8>>;
 
-@group(0) @binding(4)
-var grayscale: texture_2d<f32>;
+@group(1) @binding(3)
+var<storage, read_write> subgroup_size_output: atomic<u32>;
 
-var<workgroup> current_descriptors: array<atomic<u32>, 2>;
+@compute
+@workgroup_size(64, 1, 1)
+fn brief(
+    @builtin(global_invocation_id) global_id: vec3u,
+    @builtin(num_subgroups) num_subgroups: u32,
+    @builtin(subgroup_id) subgroup_id: u32,
+    @builtin(subgroup_size) subgroup_size: u32,
+    @builtin(subgroup_invocation_id) subgroup_invocation_id: u32
+) {
+    let feature_id = global_id.y;
+
+    if feature_id >= counter {
+        return;
+    }
+
+    // Compute value of descriptors[feature_id][bitflag_id]
+    let corner = corners[feature_id];
+    let octave = corner.octave;
+    
+    let pos = vec2i(i32(corner.x), i32(corner.y));
+
+    let angle = corner.angle;
+    let ct = cos(angle);
+    let st = sin(angle);
+    let rotation_matrix = mat2x2f(
+        ct, -st,
+        st, ct
+    );
+
+    let descriptor_info = brief_descriptors[global_id.x];
+    // let descriptor_info = brief_descriptors[global_id.x];
+
+    let unrotated_point_a = vec2f(descriptor_info.xy);
+    let unrotated_point_b = vec2f(descriptor_info.zw);
+
+    let rotated_point_a = rotation_matrix * unrotated_point_a;
+    let rotated_point_b = rotation_matrix * unrotated_point_b;
+
+    let texel_a = vec2i(rotated_point_a) + pos;
+    let texel_b = vec2i(rotated_point_b) + pos;
+
+    let value_a = textureLoad(blur_hierarchy[octave], texel_a, 0);
+    let value_b = textureLoad(blur_hierarchy[octave], texel_b, 0);
+
+    var bitflag = 0u;
+    if value_a.x > value_b.x {
+        bitflag = 1u << (global_id.x & 31u);
+    }
+    
+    // TODO: Use subgroupElect() here
+    // This replacement is from https://github.com/gfx-rs/wgpu/pull/4190#issuecomment-1909098019
+    if (subgroupBroadcastFirst(subgroup_invocation_id) == subgroup_invocation_id) {
+        let allflags = subgroupOr(bitflag);
+        descriptors[feature_id][global_id.x >> 3] = allflags;
+    }
+
+    // descriptors[feature_id][bitflag_id] = bitflag;
+
+}
 
 var<private> brief_descriptors: array<vec4i, 256> = array(
     vec4i(8,-3, 9,5),
@@ -274,67 +339,3 @@ var<private> brief_descriptors: array<vec4i, 256> = array(
     vec4i(-1,-6, 0,-11)
 );
 
-var<private> CORNERS_16: array<vec2i, 16> = array(
-    vec2i(-3, 0),
-    vec2i(-3, -1),
-    vec2i(-2, -2),
-    vec2i(-1, -3),
-    vec2i(0, -3),
-    vec2i(1, -3),
-    vec2i(2, -2),
-    vec2i(3, -1),
-    vec2i(3, 0),
-    vec2i(3, 1),
-    vec2i(2, 2),
-    vec2i(1, 3),
-    vec2i(0, 3),
-    vec2i(-1, 3),
-    vec2i(-2, 2),
-    vec2i(-3, 1)
-);
-
-@compute
-@workgroup_size(8, 8, 1)
-fn feature_descriptors(
-    @builtin(global_invocation_id) global_id: vec3u
-) {
-    if global_id.x >= corners_counter {
-        return;
-    }
-
-    let corner = corners[global_id.x];
-    let pos = vec2i(corner);
-
-    // Compute orientation
-    var centroid: vec2f;
-    for (var i = 0; i < 16; i ++) {
-        centroid += vec2f(CORNERS_16[i]) * textureLoad(grayscale, pos + CORNERS_16[i], 0).x;
-    }
-    let normed = normalize(centroid);
-
-    let rot = mat2x2f(
-        normed.x, -normed.y,
-        normed.y,  normed.x
-    );
-
-    // Compute direction
-    var data: array<u32, 8>;
-
-    var k = 0u;
-    for (var i = 0u; i < 8u; i ++) {
-        for (var j = 0u; j < 32u; j ++) {
-            let test_point = brief_descriptors[k];
-
-            let p1 = textureLoad(grayscale, pos + test_point.xy, 0).x;
-            let p2 = textureLoad(grayscale, pos + test_point.zw, 0).x;
-
-            if p1 < p2 {
-                data[i] |= 1u << j;
-            }
-
-            k += 1u;
-        }
-    }
-
-    descriptors[global_id.x] = data;
-}
