@@ -6,15 +6,12 @@ struct Feature {
 }
 
 @group(0) @binding(0)
-var linear_sampler: sampler;
-
-@group(0) @binding(1)
 var texture: texture_2d<f32>;
 
-@group(1) @binding(0)
+@group(0) @binding(1)
 var<storage, read_write> corners: array<Feature>;
 
-@group(1) @binding(1)
+@group(0) @binding(2)
 var<storage, read_write> global_counter: atomic<u32>;
 
 var<push_constant> octave: u32;
@@ -61,7 +58,7 @@ fn detect_streak_16(x: u32) -> u32 {
 
 @compute
 @workgroup_size(8, 8, 1)
-fn corner_detector(
+fn compute_fast(
     @builtin(global_invocation_id) global_id: vec3u,
     @builtin(local_invocation_index) local_index: u32
 ) {
@@ -74,7 +71,7 @@ fn corner_detector(
     // Any valid corner must be inside a certain distance from the edges
     // to properly calculate its BRIEF descriptor
     if (all(global_id.xy > vec2u(16, 16)) && all(global_id.xy < textureDimensions(texture))) {
-        let center_value = textureLoad(texture, global_id.xy, 0).x;
+        let center_value = textureLoad(texture, global_id.xy, i32(octave)).x;
 
         let threshold = 0.20;
 
@@ -84,7 +81,7 @@ fn corner_detector(
         var num_under = 0u;
         
         for (var i = 0u; i < 4u; i ++) {
-            let corner_value = textureLoad(texture, id_i32 + CORNERS_4[i], 0).x;
+            let corner_value = textureLoad(texture, id_i32 + CORNERS_4[i], i32(octave)).x;
             let diff = corner_value - center_value;
             if diff > threshold {
                 num_over ++;
@@ -101,7 +98,7 @@ fn corner_detector(
             var centroid = vec2f(0, 0);
 
             for (var i = 0u; i < 16u; i ++) {
-                let corner_value = textureLoad(texture, id_i32 + CORNERS_16[i], 0).x;
+                let corner_value = textureLoad(texture, id_i32 + CORNERS_16[i], i32(octave)).x;
                 let diff = corner_value - center_value;
                 
                 centroid += corner_value * vec2f(CORNERS_16[i]);
