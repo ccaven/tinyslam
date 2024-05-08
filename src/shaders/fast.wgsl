@@ -1,7 +1,7 @@
 struct Feature {
     x: u32,
     y: u32,
-    angle: f32,
+    angle: u32,
     octave: u32
 }
 
@@ -13,6 +13,9 @@ var<storage, read_write> corners: array<Feature>;
 
 @group(0) @binding(2)
 var<storage, read_write> global_counter: atomic<u32>;
+
+@group(0) @binding(3)
+var<uniform> threshold: f32;
 
 var<push_constant> octave: u32;
 
@@ -70,10 +73,9 @@ fn compute_fast(
 
     // Any valid corner must be inside a certain distance from the edges
     // to properly calculate its BRIEF descriptor
-    if (all(global_id.xy > vec2u(16, 16)) && all(global_id.xy < textureDimensions(texture))) {
+    
+    if all(global_id.xy > vec2u(16, 16)) && all(global_id.xy < textureDimensions(texture) - vec2u(16, 16)) {
         let center_value = textureLoad(texture, global_id.xy, i32(octave)).x;
-
-        let threshold = 0.20;
 
         let id_i32 = vec2i(global_id.xy);
 
@@ -148,7 +150,7 @@ fn compute_fast(
 
         feature.x = global_id.x;
         feature.y = global_id.y;
-        feature.angle = angle;
+        feature.angle = u32(angle * 1000.0);
         feature.octave = octave;
 
         corners[global_index] = feature;

@@ -1,9 +1,4 @@
-/*
-TODO: 
- - Render blur texture using a normal vertex/fragment shader, samplers, two passes
- - Should get performance from 1.0ms to 0.5ms
-*/
-
+use bytemuck::{Pod, Zeroable};
 use wgpu::{
     BufferUsages, ShaderStages, TextureUsages
 };
@@ -12,16 +7,47 @@ use tiny_wgpu::{
     Storage, Compute, ComputeProgram, BindGroupItem, ComputeKernel, RenderKernel
 };
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CornerData {
+    x: u32,
+    y: u32,
+    angle: u32,
+    octave: u32
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CornerDescriptor {
+    bits: [u8; 32]
+}
+
+unsafe impl Zeroable for CornerData {
+    fn zeroed() -> Self {
+        Self { x: 0, y: 0, angle: 0, octave: 0 }
+    }
+}
+
+unsafe impl Zeroable for CornerDescriptor {
+    fn zeroed() -> Self {
+        Self { bits: [0; 32] }
+    }
+}
+
+unsafe impl Pod for CornerData {}
+unsafe impl Pod for CornerDescriptor {}
+
 pub struct OrbConfig {
     pub image_size: wgpu::Extent3d,
     pub max_features: u32,
-    pub hierarchy_depth: u32
+    pub hierarchy_depth: u32,
+    pub initial_threshold: f32
 }
 
 pub struct OrbProgram {
     pub config: OrbConfig,
     pub compute: Compute,
-    pub storage: Storage
+    pub storage: Storage,
 }
 
 impl ComputeProgram for OrbProgram {
@@ -143,12 +169,19 @@ impl OrbProgram {
             4
         );
 
-        self.add_staging_buffer("counter");
+        self.add_buffer(
+            "threshold",
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            4
+        );
+
+        self.set_threshold(self.config.initial_threshold);
 
         self.add_bind_group("fast", &[
             BindGroupItem::TextureView { label: "image_hierarchy_all", sample_type: wgpu::TextureSampleType::Float { filterable: true } },
             BindGroupItem::StorageBuffer { label: "corners", min_binding_size: 12 * 4, read_only: false },
-            BindGroupItem::StorageBuffer { label: "counter", min_binding_size: 4, read_only: false }
+            BindGroupItem::StorageBuffer { label: "counter", min_binding_size: 4, read_only: false },
+            BindGroupItem::UniformBuffer { label: "threshold", min_binding_size: 4 },
         ]);
 
         self.add_compute_pipelines(
@@ -159,7 +192,11 @@ impl OrbProgram {
             None
         );
 
-        self.add_buffer("descriptors", BufferUsages::STORAGE, (self.config.max_features * 8 * 4) as u64);
+        self.add_buffer(
+            "descriptors", 
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC, 
+            (self.config.max_features * 8 * 4) as u64
+        );
 
         self.add_bind_group("descriptors", &[
             BindGroupItem::StorageBuffer { label: "corners", min_binding_size: 12 * 4, read_only: true },
@@ -175,6 +212,10 @@ impl OrbProgram {
             &[], 
             None
         );
+        
+        self.add_staging_buffer("counter");
+        self.add_staging_buffer("corners");
+        self.add_staging_buffer("descriptors");
     }
 
     fn initialize_image_hierarchy(&mut self) {
@@ -426,6 +467,7 @@ impl OrbProgram {
     }
 
     pub fn extract_corners(&self) -> u32 {
+
         let mut encoder = self.compute().device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None
         });
@@ -493,23 +535,33 @@ impl OrbProgram {
 
         // Wait for device to finish
         self.copy_buffer_to_staging(&mut encoder, "counter");
+        self.copy_buffer_to_staging(&mut encoder, "corners");
+        self.copy_buffer_to_staging(&mut encoder, "descriptors");
 
         self.compute().queue.submit(Some(encoder.finish()));
 
         self.prepare_staging_buffer("counter");
+        self.prepare_staging_buffer("corners");
+        self.prepare_staging_buffer("descriptors");
 
         self.compute().device.poll(wgpu::MaintainBase::Wait);
 
         // Retrieve data from staging buffer
         let corner_count: u32 = {
             let mut dst = [0u8; 4];
-            
             self.read_staging_buffer("counter", &mut dst);
-
             *bytemuck::cast_slice(&dst).iter().next().unwrap()
         };
 
         return corner_count;
+    }
+    
+    pub fn read_corners(&self, dst: &mut [CornerData]) {      
+        self.read_staging_buffer("corners", dst);
+    }
+
+    pub fn read_descriptors(&self, dst: &mut [CornerDescriptor]) {
+        self.read_staging_buffer("descriptors", dst);
     }
 
     pub fn write_input_image(&self, bytes: &[u8]) {
@@ -528,5 +580,11 @@ impl OrbProgram {
             },
             self.config.image_size
         );
+    }
+
+    pub fn set_threshold(&self, threshold: f32) {
+        let bytes = &[threshold];
+        let bytes = bytemuck::cast_slice(bytes);
+        self.compute().queue.write_buffer(&self.storage().buffers["threshold"], 0, bytes);
     }
 }

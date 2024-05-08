@@ -1,7 +1,7 @@
 struct Feature {
     x: u32,
     y: u32,
-    angle: f32,
+    angle: u32,
     octave: u32
 }
 
@@ -32,7 +32,7 @@ fn brief(
     let octave = i32(corner.octave);
 
     let pos = vec2i(i32(corner.x), i32(corner.y));
-    let angle = corner.angle;
+    let angle = f32(corner.angle) / 1000.0;
     let ct = cos(angle);
     let st = sin(angle);
     let rotation_matrix = mat2x2f(
