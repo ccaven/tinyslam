@@ -6,28 +6,21 @@ struct Feature {
 }
 
 @group(0) @binding(0)
-var blur_hierarchy: binding_array<texture_2d<f32>>;
-
-@group(1) @binding(0)
 var<storage, read> corners: array<Feature>;
 
-@group(1) @binding(1)
+@group(0) @binding(1)
 var<storage, read> counter: u32;
 
-@group(1) @binding(2)
+@group(0) @binding(2)
 var<storage, read_write> descriptors: array<array<u32, 8>>;
 
-@group(1) @binding(3)
-var<storage, read_write> subgroup_size_output: atomic<u32>;
+@group(0) @binding(3)
+var blur_hierarchy: texture_2d<f32>;
 
 @compute
-@workgroup_size(64, 1, 1)
+@workgroup_size(8, 8, 1)
 fn brief(
-    @builtin(global_invocation_id) global_id: vec3u,
-    @builtin(num_subgroups) num_subgroups: u32,
-    @builtin(subgroup_id) subgroup_id: u32,
-    @builtin(subgroup_size) subgroup_size: u32,
-    @builtin(subgroup_invocation_id) subgroup_invocation_id: u32
+    @builtin(global_invocation_id) global_id: vec3u
 ) {
     let feature_id = global_id.y;
 
@@ -35,12 +28,10 @@ fn brief(
         return;
     }
 
-    // Compute value of descriptors[feature_id][bitflag_id]
     let corner = corners[feature_id];
-    let octave = corner.octave;
-    
-    let pos = vec2i(i32(corner.x), i32(corner.y));
+    let octave = i32(corner.octave);
 
+    let pos = vec2i(i32(corner.x), i32(corner.y));
     let angle = corner.angle;
     let ct = cos(angle);
     let st = sin(angle);
@@ -49,35 +40,31 @@ fn brief(
         st, ct
     );
 
-    let descriptor_info = brief_descriptors[global_id.x];
-    // let descriptor_info = brief_descriptors[global_id.x];
+    var bits = 0u;
 
-    let unrotated_point_a = vec2f(descriptor_info.xy);
-    let unrotated_point_b = vec2f(descriptor_info.zw);
+    for (var i = 0u; i < 32u; i ++) {
 
-    let rotated_point_a = rotation_matrix * unrotated_point_a;
-    let rotated_point_b = rotation_matrix * unrotated_point_b;
+        let descriptor_index = global_id.x << 5u | i;
+        let descriptor_info = brief_descriptors[descriptor_index];
 
-    let texel_a = vec2i(rotated_point_a) + pos;
-    let texel_b = vec2i(rotated_point_b) + pos;
+        let unrotated_point_a = vec2f(descriptor_info.xy);
+        let unrotated_point_b = vec2f(descriptor_info.zw);
+        
+        let rotated_point_a = rotation_matrix * unrotated_point_a;
+        let rotated_point_b = rotation_matrix * unrotated_point_b;
 
-    let value_a = textureLoad(blur_hierarchy[octave], texel_a, 0);
-    let value_b = textureLoad(blur_hierarchy[octave], texel_b, 0);
+        let texel_a = vec2i(rotated_point_a) + pos;
+        let texel_b = vec2i(rotated_point_b) + pos;
 
-    var bitflag = 0u;
-    if value_a.x > value_b.x {
-        bitflag = 1u << (global_id.x & 31u);
-    }
-    
-    // TODO: Use subgroupElect() here
-    // This replacement is from https://github.com/gfx-rs/wgpu/pull/4190#issuecomment-1909098019
-    if (subgroupBroadcastFirst(subgroup_invocation_id) == subgroup_invocation_id) {
-        let allflags = subgroupOr(bitflag);
-        descriptors[feature_id][global_id.x >> 3] = allflags;
+        let value_a = textureLoad(blur_hierarchy, texel_a, octave);
+        let value_b = textureLoad(blur_hierarchy, texel_b, octave);
+
+        if value_a.x > value_b.x {
+            bits |= 1u << i;
+        }
     }
 
-    // descriptors[feature_id][bitflag_id] = bitflag;
-
+    descriptors[feature_id][global_id.x] = bits;
 }
 
 var<private> brief_descriptors: array<vec4i, 256> = array(
